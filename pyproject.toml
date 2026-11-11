@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "game-forensic-engine"
+version = "0.1.0"
+description = "Explainable, evidence-aware Steam recommendation engine"
+requires-python = ">=3.11"
+dependencies = ["httpx[socks]>=0.27,<1", "pydantic>=2.7,<3", "scikit-learn>=1.4,<2", "beautifulsoup4>=4.12,<5", "numpy>=1.26,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.9"]
+
+[project.scripts]
+game-forensic = "game_forensic.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["game_forensic*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
