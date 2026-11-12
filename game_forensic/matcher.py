@@ -37,30 +37,38 @@ DEFAULT_BLACKLIST = {1599340: "Lost Ark: ранее подтверждены P2W
 # Low/high endpoints of each independent axis, not genre-to-feature assumptions.
 CUES = {
     "combat_pace": (
-        r"turn[- ]based|slow[- ]paced combat|пошагов\w*|нетороплив\w* бо\w*",
-        r"fast[- ]paced combat|reflex\w*|real[- ]time combat|быстр\w* бо\w*|реакци\w*",
+        (r"turn[- ]based|slow[- ]paced combat|cozy|relaxing|meditative|no rush|at your own pace|"
+         r"пошагов\w*|нетороплив\w* бо\w*|медитативн\w*|расслабляющ\w*|без спешки"),
+        (r"fast[- ]paced combat|reflex\w*|real[- ]time combat|bullet[- ]hell|intense action|"
+         r"быстр\w* бо\w*|реакци\w*|динамичн\w* бо\w*"),
     ),
     "build_depth": (
-        r"fixed (?:loadout|build)|no (?:skill tree|build variety)|фиксирован\w* билд\w*",
-        (r"skill trees?|build variety|buildcraft\w*|customi[sz]able builds?|"
-        r"дерев\w* навыков|вариатив\w* билд\w*|разнообраз\w* билд\w*"),
+        r"fixed (?:loadout|build)|no (?:skill tree|build variety|upgrades?)|фиксирован\w* билд\w*|нет прокачк\w*",
+        (r"skill trees?|build variety|buildcraft\w*|customi[sz]able builds?|upgrade(?:s|able)?|automation|abilities|"
+         r"дерев\w* навыков|вариатив\w* билд\w*|разнообраз\w* билд\w*|прокачк\w*|апгрейд\w*|автоматизац\w*"),
     ),
     "tactile_feedback": (
         r"clunky controls?|unresponsive controls?|floaty combat|неотзывчив\w* управлен\w*",
-        (r"responsive controls?|tight controls?|weighty combat|impactful combat|"
-        r"отзывчив\w* управлен\w*|ощутим\w* удар\w*"),
+        (r"responsive controls?|tight controls?|weighty combat|impactful combat|oddly satisfying|very satisfying|"
+         r"physics[- ]based|tactile|отзывчив\w* управлен\w*|ощутим\w* удар\w*|залипательн\w*|тактильн\w*"),
     ),
     "punishment_severity": (
-        r"forgiving|no death penalty|frequent checkpoints?|без штраф\w* за смерть|част\w* чекпоинт\w*",
+        (r"forgiving|no death penalty|frequent checkpoints?|no timers?|no stress|zero stress|"
+         r"без штраф\w* за смерть|част\w* чекпоинт\w*|без таймер\w*|без стресс\w*"),
         (r"permadeath|lose (?:all|your) (?:gear|progress|items)|punishing|"
-        r"перманентн\w* смерть|потер\w* прогресс\w*|высок\w* цен\w* ошибк\w*"),
+         r"перманентн\w* смерть|потер\w* прогресс\w*|высок\w* цен\w* ошибк\w*"),
     ),
     "narrative_weight": (
         r"no story|minimal (?:story|narrative)|без сюжет\w*|минимальн\w* сюжет\w*",
         (r"story[- ]rich|story[- ]driven|narrative[- ]driven|branching (?:story|narrative)|"
-        r"сюжетно[- ]ориентирован\w*|глубок\w* сюжет\w*|нелинейн\w* сюжет\w*"),
+         r"сюжетно[- ]ориентирован\w*|глубок\w* сюжет\w*|нелинейн\w* сюжет\w*"),
     ),
 }
+COMPLETION_CUE = re.compile(
+    r"\b(?:beat (?:the|this) game|finished|completed|100%|all achievements?|one sitting)\b|"
+    r"прош[её]л|пройдена|на 100%|все достижения|за один присест",
+    re.I,
+)
 NEGATION = re.compile(r"(?:\b(?:no|not|without)|\b(?:не|нет|без))\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 
 
@@ -129,6 +137,18 @@ def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoo
     for axis, value in (profile or {}).items():
         features[axis] = Feature(value=value, confidence=1, evidence=["curated profile"])
     return CoreLoop(features=features, origin="curated" if profile else game.loop.origin)
+
+
+def estimate_completion_hours(game: Game) -> float | None:
+    """Estimate median completion playtime (hours) from reviews mentioning finishing the game."""
+    from statistics import median
+
+    hours = [
+        r.minutes_at_review / 60
+        for r in game.reviews
+        if r.minutes_at_review is not None and r.minutes_at_review > 0 and COMPLETION_CUE.search(r.text)
+    ]
+    return round(median(hours), 1) if hours else None
 
 
 def match_loops(reference: CoreLoop, candidate: CoreLoop, weights: dict[str, float] | None = None) -> Match:

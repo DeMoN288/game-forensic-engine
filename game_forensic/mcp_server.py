@@ -1,21 +1,66 @@
 """Steam Forensic Engine MCP Server (Model Context Protocol).
 
-Provides forensic game analysis, anti-grind GTI evaluation, and CoreLoop backlog matching.
+Provides forensic game analysis, anti-grind GTI evaluation, CoreLoop backlog matching,
+Steam discovery search, and persistent blacklist/profile management.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
 from .analyzer import Analyzer, AnalyzerConfig
-from .matcher import Matcher, MatcherConfig, extract_loop, match_loops
-from .network import NetworkConfig, Transport
+from .matcher import (
+    DEFAULT_BLACKLIST,
+    Matcher,
+    MatcherConfig,
+    estimate_completion_hours,
+    extract_loop,
+    match_loops,
+)
+from .network import NetworkConfig, SourceError, Transport
 from .pipeline import Pipeline, PipelineConfig
 
 mcp = MCPServer("steam-game-forensic")
+
+_NON_GAME_SUFFIXES = (" soundtrack", " ost", " demo", " artbook", " dlc")
+
+
+def _data_dir() -> Path:
+    custom = os.environ.get("GAME_FORENSIC_DATA_DIR")
+    return Path(custom) if custom else Path.home() / ".game-forensic"
+
+
+def _load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _load_user_blacklist() -> dict[int, str]:
+    merged = dict(DEFAULT_BLACKLIST)
+    raw = _load_json_dict(_data_dir() / "blacklist.json")
+    for key, reason in raw.items():
+        if str(key).isdigit() and isinstance(reason, str) and reason.strip():
+            merged[int(key)] = reason.strip()
+    return merged
+
+
+def _load_user_profiles() -> dict[int, dict[str, float]]:
+    raw = _load_json_dict(_data_dir() / "profiles.json")
+    profiles: dict[int, dict[str, float]] = {}
+    for key, axes in raw.items():
+        if str(key).isdigit() and isinstance(axes, dict) and axes:
+            profiles[int(key)] = {str(k): float(v) for k, v in axes.items()}
+    return profiles
 
 
 async def _resolve_appid(transport: Transport, target: str | int) -> tuple[int, str]:
@@ -28,11 +73,20 @@ async def _resolve_appid(transport: Transport, target: str | int) -> tuple[int, 
     url = "https://store.steampowered.com/api/storesearch/"
     try:
         data = await transport.json(url, {"term": title, "l": "english", "cc": "us"})
-        items = data.get("items", [])
-        if items and "id" in items[0]:
-            return int(items[0]["id"]), items[0].get("name", title)
-    except Exception:
-        pass
+        items = [it for it in data.get("items", []) if "id" in it]
+        if items:
+            # Prefer base apps over soundtracks/demos when searching by title.
+            preferred = next(
+                (
+                    it
+                    for it in items
+                    if not str(it.get("name", "")).lower().endswith(_NON_GAME_SUFFIXES)
+                ),
+                items[0],
+            )
+            return int(preferred["id"]), preferred.get("name", title)
+    except (SourceError, ValueError, TypeError, KeyError, OSError) as exc:
+        raise ValueError(f"Could not resolve Steam AppID for game: '{target}'") from exc
 
     raise ValueError(f"Could not resolve Steam AppID for game: '{target}'")
 
@@ -47,7 +101,7 @@ async def steam_analyze_game(
 
     Evaluates:
     - Grind-to-Infinity (GTI) index (0-100)
-    - Early churn clusters & complaint velocity
+    - Early churn clusters & estimated completion hours
     - Category breakdown (repetition, time_gating, rng, pay_to_skip, slow_progression)
     - 5-axis gameplay loop attributes
     - Forensic verdict (RED_FLAG_REJECT, CAUTION, NO_RED_FLAG_DETECTED, INSUFFICIENT_DATA)
@@ -65,18 +119,17 @@ async def steam_analyze_game(
         enable_steamdb=False,
         enable_steampeek=False,
     )
-    ana_config = AnalyzerConfig()
-    matcher_config = MatcherConfig()
+    analyzer = Analyzer(AnalyzerConfig())
+    profiles = _load_user_profiles()
 
-    transport = Transport(net_config)
-    appid, resolved_name = await _resolve_appid(transport, game)
-    pipeline = Pipeline(transport, pipe_config)
-    analyzer = Analyzer(ana_config)
-    matcher = Matcher(matcher_config)
+    async with Transport(net_config) as transport:
+        appid, resolved_name = await _resolve_appid(transport, game)
+        pipeline = Pipeline(transport, pipe_config)
+        game_data = await pipeline.collect(appid, discover=False)
 
-    game_data = await pipeline.collect(appid, discover=False)
     grind = analyzer.analyze(game_data)
-    loop = extract_loop(game_data)
+    loop = extract_loop(game_data, profiles.get(appid))
+    est_hours = estimate_completion_hours(game_data)
 
     result = {
         "appid": appid,
@@ -86,6 +139,7 @@ async def steam_analyze_game(
         "confidence": grind.confidence,
         "sample_size": grind.sample_size,
         "complaint_count": grind.complaint_count,
+        "estimated_completion_hours": est_hours,
         "categories": grind.categories,
         "early_cluster": grind.early_cluster,
         "five_axis_profile": {
@@ -116,7 +170,7 @@ async def steam_match_backlog(
 ) -> str:
     """Compare two Steam games using the 5-axis CoreLoop engine.
 
-    Calculates cosine vector similarity and structural alignment between gameplay loops
+    Calculates similarity and structural alignment between gameplay loops
     (combat pace, build depth, tactile feedback, punishment severity, narrative weight).
 
     Args:
@@ -124,44 +178,45 @@ async def steam_match_backlog(
         game_b: Candidate game from backlog (AppID or Name), e.g. "Lies of P".
     """
     net_config = NetworkConfig(timeout=30)
-    pipe_config = PipelineConfig(review_pages=2, languages=["english", "russian"])
-    ana_config = AnalyzerConfig()
-    matcher_config = MatcherConfig()
-
-    transport = Transport(net_config)
-    id_a, name_a = await _resolve_appid(transport, game_a)
-    id_b, name_b = await _resolve_appid(transport, game_b)
-
-    pipeline = Pipeline(transport, pipe_config)
-    analyzer = Analyzer(ana_config)
-    matcher = Matcher(matcher_config)
-
-    game_data_a, game_data_b = await asyncio.gather(
-        pipeline.collect(id_a, discover=False),
-        pipeline.collect(id_b, discover=False),
+    pipe_config = PipelineConfig(
+        review_pages=2,
+        languages=["english", "russian"],
+        enable_steampeek=False,
     )
+    analyzer = Analyzer(AnalyzerConfig())
+    profiles = _load_user_profiles()
+
+    async with Transport(net_config) as transport:
+        id_a, name_a = await _resolve_appid(transport, game_a)
+        id_b, name_b = await _resolve_appid(transport, game_b)
+        pipeline = Pipeline(transport, pipe_config)
+        game_data_a, game_data_b = await asyncio.gather(
+            pipeline.collect(id_a, discover=False),
+            pipeline.collect(id_b, discover=False),
+        )
 
     grind_a = analyzer.analyze(game_data_a)
     grind_b = analyzer.analyze(game_data_b)
-
-    loop_a = extract_loop(game_data_a)
-    loop_b = extract_loop(game_data_b)
-
+    loop_a = extract_loop(game_data_a, profiles.get(id_a))
+    loop_b = extract_loop(game_data_b, profiles.get(id_b))
     match = match_loops(loop_a, loop_b)
     similarity_pct = round(match.score * 100, 2)
 
+    gti_b = grind_b.gti if grind_b.gti is not None else 100.0
     comparison = {
         "reference_game": {
             "appid": id_a,
             "name": game_data_a.name or name_a,
             "gti": grind_a.gti,
             "verdict": grind_a.verdict,
+            "estimated_completion_hours": estimate_completion_hours(game_data_a),
         },
         "candidate_game": {
             "appid": id_b,
             "name": game_data_b.name or name_b,
             "gti": grind_b.gti,
             "verdict": grind_b.verdict,
+            "estimated_completion_hours": estimate_completion_hours(game_data_b),
         },
         "match_score_pct": similarity_pct,
         "coverage": round(match.coverage, 2),
@@ -170,9 +225,13 @@ async def steam_match_backlog(
         "loop_a_scores": {k: round(v.value, 2) for k, v in loop_a.features.items()},
         "loop_b_scores": {k: round(v.value, 2) for k, v in loop_b.features.items()},
         "recommendation_verdict": (
-            "HIGH_SYNERGY_RECOMMENDED" if similarity_pct >= 70 and (grind_b.gti or 0) < 35 else
-            "MODERATE_SYNERGY" if similarity_pct >= 50 and (grind_b.gti or 0) < 40 else
-            "DIVERGENT_OR_HIGH_GRIND"
+            "INSUFFICIENT_DATA"
+            if grind_b.verdict == "INSUFFICIENT_DATA" or match.coverage < 0.4
+            else "HIGH_SYNERGY_RECOMMENDED"
+            if similarity_pct >= 70 and gti_b < 35
+            else "MODERATE_SYNERGY"
+            if similarity_pct >= 50 and gti_b < 40
+            else "DIVERGENT_OR_HIGH_GRIND"
         ),
     }
     return json.dumps(comparison, indent=2, ensure_ascii=False)
@@ -182,66 +241,192 @@ async def steam_match_backlog(
 async def steam_batch_filter(
     games: list[str | int],
     max_grind: float = 35.0,
+    max_completion_hours: float | None = None,
 ) -> str:
-    """Filter a list of backlog games by maximum allowable grind threshold (GTI).
+    """Filter a list of backlog games by grind threshold (GTI), blacklist, and optional length.
 
-    Evaluates games in parallel and discards grind-traps, returning games safe to start.
+    Evaluates games in parallel and discards grind-traps, blacklisted games, and unverified titles.
 
     Args:
         games: List of AppIDs or game names (up to 8 games per call).
         max_grind: Maximum acceptable Grind-To-Infinity (GTI) score (0-100, default 35.0).
+        max_completion_hours: Optional max estimated completion time in hours.
     """
     items = games[:8]
     net_config = NetworkConfig(timeout=30)
-    pipe_config = PipelineConfig(review_pages=1, languages=["english", "russian"])
-    ana_config = AnalyzerConfig()
+    pipe_config = PipelineConfig(
+        review_pages=1,
+        languages=["english", "russian"],
+        enable_steampeek=False,
+    )
+    analyzer = Analyzer(AnalyzerConfig())
+    blacklist = _load_user_blacklist()
 
-    transport = Transport(net_config)
-    pipeline = Pipeline(transport, pipe_config)
-    analyzer = Analyzer(ana_config)
+    async with Transport(net_config) as transport:
+        pipeline = Pipeline(transport, pipe_config)
 
-    resolved = []
-    for g in items:
-        try:
-            aid, name = await _resolve_appid(transport, g)
-            resolved.append((aid, name))
-        except Exception:
-            continue
+        async def _safe_resolve(g: str | int) -> tuple[int, str] | None:
+            try:
+                return await _resolve_appid(transport, g)
+            except (SourceError, ValueError, TypeError, KeyError, OSError):
+                return None
 
-    async def _eval(aid: int, name: str) -> dict[str, Any]:
-        try:
-            gdata = await pipeline.collect(aid, discover=False)
-            grind = analyzer.analyze(gdata)
-            gti_val = grind.gti if grind.gti is not None else 0.0
-            passed = gti_val <= max_grind and grind.verdict != "RED_FLAG_REJECT"
-            return {
-                "appid": aid,
-                "name": gdata.name or name,
-                "gti": grind.gti,
-                "verdict": grind.verdict,
-                "sample_size": grind.sample_size,
-                "passed": passed,
-                "reason": (
-                    "Clean progression pacing" if passed else
-                    f"GTI {gti_val} exceeds limit {max_grind} or rejected ({grind.verdict})"
-                ),
-            }
-        except Exception as e:
-            return {"appid": aid, "name": name, "error": str(e), "passed": False}
+        resolved_raw = await asyncio.gather(*(_safe_resolve(g) for g in items))
+        resolved = [r for r in resolved_raw if r is not None]
 
-    results = await asyncio.gather(*(_eval(aid, name) for aid, name in resolved))
+        async def _eval(aid: int, name: str) -> dict[str, Any]:
+            if aid in blacklist:
+                return {
+                    "appid": aid,
+                    "name": name,
+                    "gti": None,
+                    "verdict": "BLACKLISTED",
+                    "passed": False,
+                    "reason": f"Blacklisted: {blacklist[aid]}",
+                }
+            try:
+                gdata = await pipeline.collect(aid, discover=False)
+                grind = analyzer.analyze(gdata)
+                est_hours = estimate_completion_hours(gdata)
+
+                if grind.verdict in ("RED_FLAG_REJECT", "INSUFFICIENT_DATA") or grind.gti is None:
+                    passed = False
+                    reason = f"Rejected ({grind.verdict}; samples={grind.sample_size})"
+                elif grind.gti > max_grind:
+                    passed = False
+                    reason = f"GTI {grind.gti} exceeds limit {max_grind}"
+                elif max_completion_hours is not None and est_hours is not None and est_hours > max_completion_hours:
+                    passed = False
+                    reason = f"Estimated length {est_hours}h exceeds limit {max_completion_hours}h"
+                else:
+                    passed = True
+                    reason = "Clean progression pacing"
+
+                return {
+                    "appid": aid,
+                    "name": gdata.name or name,
+                    "gti": grind.gti,
+                    "verdict": grind.verdict,
+                    "sample_size": grind.sample_size,
+                    "estimated_completion_hours": est_hours,
+                    "passed": passed,
+                    "reason": reason,
+                }
+            except (SourceError, ValueError, TypeError, KeyError, OSError) as e:
+                return {"appid": aid, "name": name, "error": str(e), "passed": False}
+
+        results = await asyncio.gather(*(_eval(aid, name) for aid, name in resolved))
 
     approved = [r for r in results if r.get("passed")]
     rejected = [r for r in results if not r.get("passed")]
 
     summary = {
         "max_grind_threshold": max_grind,
+        "max_completion_hours": max_completion_hours,
         "total_evaluated": len(results),
         "approved_count": len(approved),
         "approved_backlog": sorted(approved, key=lambda x: x.get("gti") or 0),
         "rejected_grind_traps": rejected,
     }
     return json.dumps(summary, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+async def steam_recommend(
+    game: str | int,
+    max_candidates: int = 10,
+) -> str:
+    """Recommend similar Steam games based on CoreLoop synergy and anti-grind filtering.
+
+    Args:
+        game: Reference Steam AppID or Game Name.
+        max_candidates: Maximum number of candidate games to evaluate (1-20, default 10).
+    """
+    net_config = NetworkConfig(timeout=30)
+    pipe_config = PipelineConfig(review_pages=2, languages=["english", "russian"])
+    matcher_config = MatcherConfig(
+        max_candidates=min(max(max_candidates, 1), 20),
+        blacklist=_load_user_blacklist(),
+        profiles=_load_user_profiles(),
+    )
+
+    async with Transport(net_config) as transport:
+        appid, _ = await _resolve_appid(transport, game)
+        pipeline = Pipeline(transport, pipe_config)
+        matcher = Matcher(pipeline, Analyzer(AnalyzerConfig()), matcher_config)
+        report = await matcher.recommend(appid)
+
+    return report.model_dump_json(indent=2)
+
+
+@mcp.tool()
+async def steam_search_games(
+    query: str,
+    limit: int = 10,
+) -> str:
+    """Search Steam Store for games matching a keyword or phrase.
+
+    Useful as a discovery fallback when SteamPeek or More Like This has no candidates.
+
+    Args:
+        query: Search term (e.g. "Tidy Up", "Dismantle", "Incremental").
+        limit: Maximum number of results to return (1-25, default 10).
+    """
+    net_config = NetworkConfig(timeout=20)
+    url = "https://store.steampowered.com/api/storesearch/"
+    async with Transport(net_config) as transport:
+        data = await transport.json(url, {"term": query.strip(), "l": "english", "cc": "us"})
+
+    items = []
+    for raw in data.get("items", []):
+        name = str(raw.get("name", ""))
+        if not raw.get("id") or name.lower().endswith(_NON_GAME_SUFFIXES):
+            continue
+        price_info = raw.get("price") or {}
+        items.append(
+            {
+                "appid": int(raw["id"]),
+                "name": name,
+                "price_final": price_info.get("final"),
+                "currency": price_info.get("currency"),
+            }
+        )
+        if len(items) >= min(max(limit, 1), 25):
+            break
+
+    return json.dumps({"query": query, "count": len(items), "items": items}, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+async def steam_blacklist_add(
+    game: str | int,
+    reason: str,
+) -> str:
+    """Add a game to the persistent user blacklist so it is excluded from recommendations.
+
+    Args:
+        game: Steam AppID or Game Name.
+        reason: Short explanation of why the game was rejected (e.g. "No upgrades / boring").
+    """
+    if not reason.strip():
+        raise ValueError("Reason must not be empty")
+
+    net_config = NetworkConfig(timeout=20)
+    async with Transport(net_config) as transport:
+        appid, resolved_name = await _resolve_appid(transport, game)
+
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    bl_path = data_dir / "blacklist.json"
+    current = _load_json_dict(bl_path)
+    current[str(appid)] = reason.strip()
+    bl_path.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return json.dumps(
+        {"status": "added", "appid": appid, "name": resolved_name, "reason": reason.strip()},
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 def main() -> None:

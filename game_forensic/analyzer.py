@@ -47,8 +47,14 @@ COMPLAINT = re.compile(
     r"раздраж\w*|ужас\w*|ненавиж\w*|душн\w*", re.I,
 )
 NEGATION = re.compile(
-    r"(?:\b(?:no|not|without|never)\s+(?:(?:any|much|really|a|an)\s+){0,2}|"
-    r"(?:\bне|\bнет|\bбез)\s+(?:\w+\s+){0,2})$", re.I,
+    r"(?:\b(?:no|not|without|never|zero)\s+(?:[\w-]+\s+){0,4}|"
+    r"(?:\bне|\bнет|\bбез)\s+(?:[\w-]+\s+){0,4})$", re.I,
+)
+SHALLOW_LOOP = re.compile(
+    r"\b(?:no|nothing|lack of)\s+(?:upgrades?|unlocks?|progression|meta[- ]?progression)\b|"
+    r"\bno\s+reason\s+to\s+keep\s+playing\b|"
+    r"(?:нет|отсутств\w*)\s+(?:прокачк\w*|апгрейд\w*|улучшен\w*|прогресси\w*)",
+    re.I,
 )
 CLAUSES = re.compile(r"[.!?;\n]+|\bbut\b|\bhowever\b|\bно\b|\bоднако\b", re.I)
 SUPPORTED_LANGUAGES = {"english", "russian"}
@@ -123,6 +129,9 @@ class Analyzer:
                 warnings.append(f"steam_reviews: {source.status}; {source.detail}")
         if game.metadata.get("sampling"):
             warnings.append("Bounded review sample; category rates are not population estimates.")
+        shallow_hits = sum(1 for r in reviews if SHALLOW_LOOP.search(r.text))
+        if shallow_hits:
+            warnings.append(f"Shallow progression / missing upgrades mentioned in {shallow_hits} reviews.")
         confidence = min(1.0, n / self.config.full_confidence_reviews) * (0.75 if degraded else 1)
         if n < self.config.min_reviews:
             verdict = "INSUFFICIENT_DATA"
