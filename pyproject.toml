@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "game-forensic-engine"
-version = "1.1.0"
+version = "1.2.0"
 description = "Explainable, evidence-aware Steam recommendation & forensic MCP server"
 requires-python = ">=3.11"
 dependencies = [
