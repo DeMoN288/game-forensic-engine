@@ -15,6 +15,7 @@ from mcp.server.mcpserver import MCPServer
 
 from .analyzer import Analyzer, AnalyzerConfig
 from .matcher import (
+    AXES,
     DEFAULT_BLACKLIST,
     Matcher,
     MatcherConfig,
@@ -33,6 +34,15 @@ _NON_GAME_SUFFIXES = (" soundtrack", " ost", " demo", " artbook", " dlc")
 def _data_dir() -> Path:
     custom = os.environ.get("GAME_FORENSIC_DATA_DIR")
     return Path(custom) if custom else Path.home() / ".game-forensic"
+
+
+def _dump_json(payload: Any) -> str:
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _save_json_dict(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_dump_json(data), encoding="utf-8")
 
 
 def _load_json_dict(path: Path) -> dict[str, Any]:
@@ -160,7 +170,7 @@ async def steam_analyze_game(
         ],
         "warnings": grind.warnings,
     }
-    return json.dumps(result, indent=2, ensure_ascii=False)
+    return _dump_json(result)
 
 
 @mcp.tool()
@@ -234,7 +244,7 @@ async def steam_match_backlog(
             else "DIVERGENT_OR_HIGH_GRIND"
         ),
     }
-    return json.dumps(comparison, indent=2, ensure_ascii=False)
+    return _dump_json(comparison)
 
 
 @mcp.tool()
@@ -328,7 +338,7 @@ async def steam_batch_filter(
         "approved_backlog": sorted(approved, key=lambda x: x.get("gti") or 0),
         "rejected_grind_traps": rejected,
     }
-    return json.dumps(summary, indent=2, ensure_ascii=False)
+    return _dump_json(summary)
 
 
 @mcp.tool()
@@ -356,7 +366,28 @@ async def steam_recommend(
         matcher = Matcher(pipeline, Analyzer(AnalyzerConfig()), matcher_config)
         report = await matcher.recommend(appid)
 
-    return report.model_dump_json(indent=2)
+    return _dump_json(
+        {
+            "reference": report.reference,
+            "raw_candidate_count": len(report.raw_candidates),
+            "ranked": [
+                {
+                    "appid": item.appid,
+                    "name": item.name,
+                    "match_score_pct": round(item.match.score * 100, 2),
+                    "coverage": round(item.match.coverage, 2),
+                    "gti": item.grind.gti,
+                    "verdict": item.grind.verdict,
+                    "reasons": item.reasons,
+                    "warnings": item.warnings[:3],
+                }
+                for item in report.ranked
+            ],
+            "excluded_count": len(report.excluded),
+            "excluded": report.excluded,
+            "warnings": report.warnings,
+        }
+    )
 
 
 @mcp.tool()
@@ -394,7 +425,7 @@ async def steam_search_games(
         if len(items) >= min(max(limit, 1), 25):
             break
 
-    return json.dumps({"query": query, "count": len(items), "items": items}, indent=2, ensure_ascii=False)
+    return _dump_json({"query": query, "count": len(items), "items": items})
 
 
 @mcp.tool()
@@ -415,18 +446,44 @@ async def steam_blacklist_add(
     async with Transport(net_config) as transport:
         appid, resolved_name = await _resolve_appid(transport, game)
 
-    data_dir = _data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    bl_path = data_dir / "blacklist.json"
+    bl_path = _data_dir() / "blacklist.json"
     current = _load_json_dict(bl_path)
     current[str(appid)] = reason.strip()
-    bl_path.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
+    _save_json_dict(bl_path, current)
 
-    return json.dumps(
-        {"status": "added", "appid": appid, "name": resolved_name, "reason": reason.strip()},
-        indent=2,
-        ensure_ascii=False,
-    )
+    return _dump_json({"status": "added", "appid": appid, "name": resolved_name, "reason": reason.strip()})
+
+
+@mcp.tool()
+async def steam_profile_set(
+    game: str | int,
+    axes: dict[str, float],
+) -> str:
+    """Save or update a curated 5-axis CoreLoop profile for a Steam game.
+
+    Args:
+        game: Steam AppID or Game Name.
+        axes: Mapping of axis name (combat_pace, build_depth, tactile_feedback,
+            punishment_severity, narrative_weight) to float score in [0.0, 1.0].
+    """
+    if not axes or not set(axes) <= set(AXES):
+        raise ValueError(f"Axes must be a non-empty subset of {sorted(AXES)}")
+    cleaned = {axis: float(value) for axis, value in axes.items()}
+    if any(not 0.0 <= value <= 1.0 for value in cleaned.values()):
+        raise ValueError("Axis values must be between 0.0 and 1.0")
+
+    net_config = NetworkConfig(timeout=20)
+    async with Transport(net_config) as transport:
+        appid, resolved_name = await _resolve_appid(transport, game)
+
+    profiles_path = _data_dir() / "profiles.json"
+    current = _load_json_dict(profiles_path)
+    existing = current.get(str(appid))
+    merged = {**(existing if isinstance(existing, dict) else {}), **cleaned}
+    current[str(appid)] = merged
+    _save_json_dict(profiles_path, current)
+
+    return _dump_json({"status": "saved", "appid": appid, "name": resolved_name, "axes": merged})
 
 
 def main() -> None:

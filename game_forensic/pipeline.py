@@ -76,7 +76,7 @@ class Pipeline:
                         warnings.append("New reviews service unavailable; deprecated endpoint fallback")
                         payload = await self._legacy(appid, cursor)
                     if not isinstance(payload.get("reviews"), list):
-                        raise ValueError("reviews array missing")
+                        raise TypeError("reviews array missing")
                     if page == 0:
                         summary = payload.get("query_summary", {})
                     items = payload["reviews"]

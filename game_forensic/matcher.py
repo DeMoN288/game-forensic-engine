@@ -11,7 +11,7 @@ import re
 from bs4 import BeautifulSoup
 from pydantic import Field, model_validator
 
-from .analyzer import Analyzer
+from .analyzer import SUPPORTED_LANGUAGES, Analyzer
 from .models import (
     CoreLoop,
     Feature,
@@ -67,7 +67,7 @@ CUES = {
 COMPLETION_CUE = re.compile(
     r"\b(?:beat (?:the|this) game|finished|completed|100%|all achievements?|one sitting)\b|"
     r"прош[её]л|пройдена|на 100%|все достижения|за один присест",
-    re.I,
+    re.IGNORECASE,
 )
 NEGATION = re.compile(r"(?:\b(?:no|not|without)|\b(?:не|нет|без))\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 
@@ -107,7 +107,7 @@ def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoo
     texts = [("store", game.description)]
     seen = set()
     for review in game.reviews:
-        if review.id not in seen and review.language in {"english", "russian"}:
+        if review.id not in seen and review.language in SUPPORTED_LANGUAGES:
             texts.append((f"review:{review.id}", review.text))
             seen.add(review.id)
     for axis, poles in CUES.items():

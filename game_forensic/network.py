@@ -7,9 +7,10 @@ import json
 import random
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import Self
 from urllib.parse import urlsplit
 
 import httpx
@@ -43,8 +44,8 @@ def retry_after(value: str | None) -> float:
         try:
             dt = parsedate_to_datetime(value)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return max(0, (dt - datetime.now(timezone.utc)).total_seconds())
+                dt = dt.replace(tzinfo=UTC)
+            return max(0, (dt - datetime.now(UTC)).total_seconds())
         except (ValueError, TypeError, OverflowError):
             return 0
 
@@ -57,7 +58,7 @@ class Transport:
         self.locks: dict[str, asyncio.Lock] = {}
         self.next_request: dict[str, float] = {}
 
-    async def __aenter__(self) -> Transport:
+    async def __aenter__(self) -> Self:
         try:
             for proxy in [None, *self.config.proxies]:
                 if proxy and urlsplit(proxy).scheme not in {"http", "https", "socks5", "socks5h"}:
@@ -102,41 +103,40 @@ class Transport:
                 await self._pace(host)
                 delay = 0.0
                 try:
-                    async with self.sem:
-                        async with client.stream("GET", url, params=params) as response:
-                            status = response.status_code
-                            if status == 429:
-                                delay = retry_after(response.headers.get("Retry-After"))
-                                if delay > self.config.max_retry_after:
-                                    raise SourceError(f"{host}: 429; cooldown exceeds configured budget")
-                                # Same host cooldown applies to every route, including proxies.
-                                delay = max(delay, 2 ** attempt + random.uniform(0, 0.5))
-                                self.next_request[host] = max(
-                                    self.next_request.get(host, 0), time.monotonic() + delay)
-                                last_error = f"{host}: HTTP 429"
-                            elif status in {401, 403, 451}:
-                                last_error = f"{host}: HTTP {status}; route {route} blocked"
+                    async with self.sem, client.stream("GET", url, params=params) as response:
+                        status = response.status_code
+                        if status == 429:
+                            delay = retry_after(response.headers.get("Retry-After"))
+                            if delay > self.config.max_retry_after:
+                                raise SourceError(f"{host}: 429; cooldown exceeds configured budget")
+                            # Same host cooldown applies to every route, including proxies.
+                            delay = max(delay, 2 ** attempt + random.uniform(0, 0.5))
+                            self.next_request[host] = max(
+                                self.next_request.get(host, 0), time.monotonic() + delay)
+                            last_error = f"{host}: HTTP 429"
+                        elif status in {401, 403, 451}:
+                            last_error = f"{host}: HTTP {status}; route {route} blocked"
+                            break
+                        elif status >= 500 or status == 408:
+                            last_error = f"{host}: HTTP {status}"
+                        elif status >= 400:
+                            raise SourceError(f"{host}: HTTP {status}")
+                        else:
+                            body = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                body.extend(chunk)
+                                if len(body) > self.config.max_body:
+                                    raise SourceError(f"{host}: response too large")
+                            text = body.decode(response.encoding or "utf-8", errors="replace")
+                            if any(marker in text.lower() for marker in (
+                                "cf-chl-", "just a moment...", "verify you are human",
+                                "this item is currently unavailable in your region",
+                            )):
+                                last_error = f"{host}: challenge or region-block page"
                                 break
-                            elif status >= 500 or status == 408:
-                                last_error = f"{host}: HTTP {status}"
-                            elif status >= 400:
-                                raise SourceError(f"{host}: HTTP {status}")
-                            else:
-                                body = bytearray()
-                                async for chunk in response.aiter_bytes():
-                                    body.extend(chunk)
-                                    if len(body) > self.config.max_body:
-                                        raise SourceError(f"{host}: response too large")
-                                text = body.decode(response.encoding or "utf-8", errors="replace")
-                                if any(marker in text.lower() for marker in (
-                                    "cf-chl-", "just a moment...", "verify you are human",
-                                    "this item is currently unavailable in your region",
-                                )):
-                                    last_error = f"{host}: challenge or region-block page"
-                                    break
-                                if self.config.cache_ttl:
-                                    await asyncio.to_thread(self._write_cache, path, text)
-                                return text
+                            if self.config.cache_ttl:
+                                await asyncio.to_thread(self._write_cache, path, text)
+                            return text
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
                     # Library exception strings can contain proxy credentials.
                     last_error = f"{host}: {type(exc).__name__} on route {route}"

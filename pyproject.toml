@@ -10,9 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "httpx[socks]>=0.27,<1",
     "pydantic>=2.7,<3",
-    "scikit-learn>=1.4,<2",
     "beautifulsoup4>=4.12,<5",
-    "numpy>=1.26,<3",
     "mcp>=2.0,<3"
 ]
 
@@ -28,6 +26,7 @@ include = ["game_forensic*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.ruff]

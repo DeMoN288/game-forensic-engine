@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,7 +32,7 @@ class SourceStatus(Model):
     status: Literal["ok", "partial", "unavailable", "parse_error", "disabled"]
     detail: str = ""
     count: int = 0
-    fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    fetched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Feature(Model):

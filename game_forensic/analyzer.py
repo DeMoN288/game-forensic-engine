@@ -39,24 +39,24 @@ PATTERNS = {
                         r"\bhours (?:to|of) (?:unlock|level|grind)\w*|"
                         r"медленн\w* прогресс\w*|затянут\w* прокач\w*",
 }
-COMPILED = {name: re.compile(pattern, re.I) for name, pattern in PATTERNS.items()}
+COMPILED = {name: re.compile(pattern, re.IGNORECASE) for name, pattern in PATTERNS.items()}
 COMPLAINT = re.compile(
     r"\b(?:boring|tedious|excessive|forced|annoying|unfair|awful|hate|"
     r"too much|too slow|endless|unbearable|frustrat\w*|waste\w*)\b|"
     r"скуч\w*|нудн\w*|надоел\w*|слишком|вынужд\w*|бесконеч\w*|"
-    r"раздраж\w*|ужас\w*|ненавиж\w*|душн\w*", re.I,
+    r"раздраж\w*|ужас\w*|ненавиж\w*|душн\w*", re.IGNORECASE,
 )
 NEGATION = re.compile(
     r"(?:\b(?:no|not|without|never|zero)\s+(?:[\w-]+\s+){0,4}|"
-    r"(?:\bне|\bнет|\bбез)\s+(?:[\w-]+\s+){0,4})$", re.I,
+    r"(?:\bне|\bнет|\bбез)\s+(?:[\w-]+\s+){0,4})$", re.IGNORECASE,
 )
 SHALLOW_LOOP = re.compile(
     r"\b(?:no|nothing|lack of)\s+(?:upgrades?|unlocks?|progression|meta[- ]?progression)\b|"
     r"\bno\s+reason\s+to\s+keep\s+playing\b|"
     r"(?:нет|отсутств\w*)\s+(?:прокачк\w*|апгрейд\w*|улучшен\w*|прогресси\w*)",
-    re.I,
+    re.IGNORECASE,
 )
-CLAUSES = re.compile(r"[.!?;\n]+|\bbut\b|\bhowever\b|\bно\b|\bоднако\b", re.I)
+CLAUSES = re.compile(r"[.!?;\n]+|\bbut\b|\bhowever\b|\bно\b|\bоднако\b", re.IGNORECASE)
 SUPPORTED_LANGUAGES = {"english", "russian"}
 
 
