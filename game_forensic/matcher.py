@@ -59,9 +59,19 @@ CUES = {
          r"перманентн\w* смерть|потер\w* прогресс\w*|высок\w* цен\w* ошибк\w*"),
     ),
     "narrative_weight": (
-        r"no story|minimal (?:story|narrative)|без сюжет\w*|минимальн\w* сюжет\w*",
+        r"no story|minimal (?:story|narrative)|no plot|minimal plot|pure gameplay|без сюжет\w*|минимальн\w* сюжет\w*",
         (r"story[- ]rich|story[- ]driven|narrative[- ]driven|branching (?:story|narrative)|"
          r"сюжетно[- ]ориентирован\w*|глубок\w* сюжет\w*|нелинейн\w* сюжет\w*"),
+    ),
+}
+METADATA_CUES = {
+    "combat_pace": (
+        r"playable_at_your_own_pace|playable at your own pace|turn-based",
+        0.15,
+    ),
+    "punishment_severity": (
+        r"playable without timed input|save anytime",
+        0.15,
     ),
 }
 COMPLETION_CUE = re.compile(
@@ -134,6 +144,22 @@ def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoo
             confidence = (min(0.85, 0.45 + 0.08 * (len(observations) - 1)) * (1 - disagreement)
                           * (1 - 0.5 * contradictions / len(observations)))
             features[axis] = Feature(value=value, confidence=confidence, evidence=evidence)
+    categories_text = " | ".join(
+        str(cat.get("description", ""))
+        for cat in (game.metadata.get("categories") or [])
+        if isinstance(cat, dict) and cat.get("description")
+    )
+    if categories_text:
+        for axis, (pattern, value) in METADATA_CUES.items():
+            if axis in features:
+                continue
+            hit = re.search(pattern, categories_text, re.IGNORECASE)
+            if hit:
+                features[axis] = Feature(
+                    value=value,
+                    confidence=0.45,
+                    evidence=[f"store_category: {hit.group(0)}"],
+                )
     for axis, value in (profile or {}).items():
         features[axis] = Feature(value=value, confidence=1, evidence=["curated profile"])
     return CoreLoop(features=features, origin="curated" if profile else game.loop.origin)

@@ -239,6 +239,8 @@ async def steam_match_backlog(
             if grind_b.verdict == "INSUFFICIENT_DATA" or match.coverage < 0.4
             else "HIGH_SYNERGY_RECOMMENDED"
             if similarity_pct >= 70 and gti_b < 35
+            else "PARTIAL_MATCH_HIGH_SYNERGY"
+            if match.vector_similarity >= 0.8 and gti_b < 35
             else "MODERATE_SYNERGY"
             if similarity_pct >= 50 and gti_b < 40
             else "DIVERGENT_OR_HIGH_GRIND"

@@ -149,3 +149,30 @@ async def test_mcp_steam_recommend_and_profile_set(monkeypatch: pytest.MonkeyPat
     assert len(rec_res["ranked"]) == 1
     assert rec_res["ranked"][0]["appid"] == 200
     assert rec_res["ranked"][0]["verdict"] == "NO_RED_FLAG_DETECTED"
+
+
+@pytest.mark.asyncio
+async def test_mcp_steam_match_backlog_partial_high_synergy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
+    _patch_mcp_network(
+        monkeypatch,
+        {
+            100: _sample_game(
+                100,
+                "Ref Game",
+                "Relaxing game with upgrades, responsive controls.",
+                "Oddly satisfying loop and great upgrades.",
+            ),
+            200: _sample_game(
+                200,
+                "Candidate Game",
+                "Relaxing game with upgrades, responsive controls.",
+                "Very satisfying loop and fun upgrades.",
+            ),
+        },
+    )
+
+    res = json.loads(await mcp_server.steam_match_backlog(100, 200))
+    assert res["vector_similarity"] == 1.0
+    assert res["coverage"] == 0.6
+    assert res["recommendation_verdict"] == "PARTIAL_MATCH_HIGH_SYNERGY"

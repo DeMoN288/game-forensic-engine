@@ -137,3 +137,24 @@ async def test_mcp_blacklist_add_and_search_games(monkeypatch, tmp_path: Path):
     assert bl_res["appid"] == 222
     saved = json.loads((tmp_path / "blacklist.json").read_text(encoding="utf-8"))
     assert saved["222"] == "No upgrades"
+
+
+def test_extract_loop_uses_steam_category_metadata_fallback():
+    game = Game(
+        appid=777,
+        name="Chill Toy",
+        description="Physics toy with upgrades.",
+        metadata={
+            "categories": [
+                {"description": "#category_playable_at_your_own_pace"},
+                {"description": "Playable without Timed Input"},
+                {"description": "Save Anytime"},
+            ]
+        },
+        reviews=_make_reviews(5, "Fun upgrades!"),
+    )
+    loop = extract_loop(game)
+    assert loop.features["combat_pace"].value == 0.15
+    assert loop.features["combat_pace"].confidence == 0.45
+    assert loop.features["punishment_severity"].value == 0.15
+    assert loop.features["punishment_severity"].confidence == 0.45
