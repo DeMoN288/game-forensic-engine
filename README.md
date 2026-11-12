@@ -1,12 +1,38 @@
-# Game Forensic Engine
+# Game Forensic Engine & MCP Server
 
-Анализ жалоб Steam (EN/RU) и рекомендации по геймплейному циклу.
+Анализ жалоб Steam (EN/RU), выявление гринда (GTI), сопоставление геймплейных циклов (CoreLoop) и нативный **MCP-сервер** (Model Context Protocol) для ИИ-агентов (ZCode, OpenCode, Claude Desktop, Cursor).
 
 ```bash
 pip install -e '.[dev]'
 python -m game_forensic.cli 1091500
 python -m game_forensic.cli recommend 1091500
-python -m game_forensic.cli recommend 1091500 --profiles profiles.json --blacklist blacklist.json --format json -o report.json
+```
+
+## MCP Сервер (Model Context Protocol)
+
+Движок работает как stdio JSON-RPC MCP-сервер, предоставляя инструменты для LLM:
+- **`steam_analyze_game`**: глубокий форензик-анализ (GTI, анти-ачивки, 5-осевой профиль, вердикт).
+- **`steam_match_backlog`**: сравнение двух игр по 5 осям CoreLoop (векторное сходство геймплея).
+- **`steam_batch_filter`**: параллельный отсев дрочилен из бэклога по заданному порогу гринда (`max_grind`).
+
+### Запуск MCP
+```bash
+python -m game_forensic.mcp_server
+# или через entrypoint
+game-forensic-mcp
+```
+
+### Подключение в OpenCode / Claude Desktop / ZCode
+```json
+{
+  "mcpServers": {
+    "steam-forensic": {
+      "command": "python",
+      "args": ["-m", "game_forensic.mcp_server"],
+      "cwd": "E:\\workspace\\code\\game-forensic-engine"
+    }
+  }
+}
 ```
 
 ## Рекомендации
