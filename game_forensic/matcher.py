@@ -186,7 +186,7 @@ def match_loops(reference: CoreLoop, candidate: CoreLoop, weights: dict[str, flo
     observed_weight = sum(weights[axis] for axis in common)
     total_weight = sum(weights.values())
     if not common:
-        return Match(score=0, coverage=0, vector_similarity=0, graph_similarity=None, common_dimensions=[])
+        return Match(score=0, coverage=0, vector_similarity=0, common_dimensions=[])
     distances = {axis: 1 - abs(reference.features[axis].value - candidate.features[axis].value)
                  for axis in common}
     vector = sum(weights[a] * distances[a] for a in common) / observed_weight
@@ -194,7 +194,7 @@ def match_loops(reference: CoreLoop, candidate: CoreLoop, weights: dict[str, flo
                                                candidate.features[a].confidence)
                 for a in common) / total_weight
     return Match(score=round(score, 6), coverage=observed_weight / total_weight,
-                 vector_similarity=vector, graph_similarity=None, common_dimensions=common)
+                 vector_similarity=vector, common_dimensions=common)
 
 
 def rejection_reason(report: GrindReport) -> str | None:
@@ -242,6 +242,42 @@ class Matcher:
             return [], SourceStatus(source="steam_store_similar", url=url, status="unavailable",
                                     detail=type(exc).__name__)
 
+    _SEARCH_KEYWORDS = (
+        "incremental", "cozy", "relaxing", "dismantle", "automation", "roguelike",
+        "turn-based", "clicker", "idler", "physics", "sandbox", "puzzle", "survivors",
+    )
+
+    async def _store_search_candidates(self, reference: Game) -> tuple[list[int], SourceStatus]:
+        url = "https://store.steampowered.com/api/storesearch/"
+        corpus = f"{reference.name} {reference.description}".lower()
+        terms = [kw for kw in self._SEARCH_KEYWORDS if kw in corpus][:2]
+        if not terms and reference.name:
+            words = [w for w in re.findall(r"[a-zA-Z0-9]{4,}", reference.name)]
+            if words:
+                terms = [words[0].lower()]
+        if not terms:
+            return [], SourceStatus(source="steam_store_search", url=url, status="partial",
+                                    count=0, detail="No search keywords extracted")
+        ids: list[int] = []
+        try:
+            async with asyncio.timeout(self.pipeline.config.source_timeout):
+                for term in terms:
+                    data = await self.pipeline.transport.json(
+                        url, {"term": term, "l": "english", "cc": self.pipeline.config.country}
+                    )
+                    for item in data.get("items", []):
+                        cid = item.get("id")
+                        if isinstance(cid, int) and cid > 0 and cid != reference.appid:
+                            ids.append(cid)
+            unique = list(dict.fromkeys(ids))
+            return unique, SourceStatus(
+                source="steam_store_search", url=url, status="ok" if unique else "partial",
+                count=len(unique), detail=f"terms={terms}" if unique else f"No hits for {terms}",
+            )
+        except (SourceError, TimeoutError, ValueError, TypeError, KeyError) as exc:
+            return [], SourceStatus(source="steam_store_search", url=url, status="unavailable",
+                                    detail=type(exc).__name__)
+
     async def recommend(self, appid: int) -> RecommendationReport:
         reference = await self.pipeline.collect(appid, discover=True)
         sources = list(reference.sources)
@@ -249,6 +285,10 @@ class Matcher:
         if len(set(ids) - {appid}) < self.config.max_candidates:
             extra, status = await self._store_candidates(appid)
             ids.extend(extra)
+            sources.append(status)
+        if not (set(ids) - {appid}) and hasattr(self.pipeline.transport, "json"):
+            search_ids, status = await self._store_search_candidates(reference)
+            ids.extend(search_ids)
             sources.append(status)
         raw = list(dict.fromkeys(i for i in ids if i > 0 and i != appid))
         excluded = {str(i): f"BLACKLIST: {self.config.blacklist[i]}" for i in raw if i in self.config.blacklist}
@@ -264,7 +304,7 @@ class Matcher:
             warnings.append("Недостаточно признаков эталона: добавьте профиль пяти осей через --profiles.")
             excluded.update({str(i): "Недостаточно данных геймплейного цикла эталона" for i in selected})
             return RecommendationReport(reference=appid, raw_candidates=raw, ranked=[], excluded=excluded,
-                                        pairwise=[], sources=sources, warnings=warnings)
+                                        sources=sources, warnings=warnings)
 
         async def validate(candidate_id: int) -> tuple[RankedGame | None, str | None]:
             try:
@@ -288,8 +328,7 @@ class Matcher:
                     notes.append(f"Покрытие осей: {match.coverage:.0%}; {loop.origin}")
                     if report.verdict == "CAUTION":
                         notes.insert(0, "CAUTION: жалобы на гринд; таймгейты/P2W не обнаружены в выборке")
-                    return RankedGame(appid=game.appid, name=game.name, utility=match.score,
-                                      pairwise_score=match.score, match=match, grind=report,
+                    return RankedGame(appid=game.appid, name=game.name, match=match, grind=report,
                                       reasons=reasons, warnings=notes), None
             except (SourceError, TimeoutError, OSError, ValueError, TypeError, KeyError) as exc:
                 return None, f"Ошибка проверки: {type(exc).__name__}"
@@ -308,4 +347,4 @@ class Matcher:
         if not ranked:
             warnings.append("Нет кандидатов, прошедших проверку безопасности и покрытия осей.")
         return RecommendationReport(reference=appid, raw_candidates=raw, ranked=ranked[:self.config.top_k],
-                                    excluded=excluded, pairwise=[], sources=sources, warnings=warnings)
+                                    excluded=excluded, sources=sources, warnings=warnings)

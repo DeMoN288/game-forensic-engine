@@ -41,16 +41,8 @@ class Feature(Model):
     evidence: list[str] = Field(default_factory=list)
 
 
-class Edge(Model):
-    source: str
-    target: str
-    weight: float = Field(default=1, ge=0, le=1)
-    evidence: str
-
-
 class CoreLoop(Model):
     features: dict[str, Feature] = Field(default_factory=dict)
-    edges: list[Edge] = Field(default_factory=list)
     origin: Literal["heuristic", "curated"] = "heuristic"
 
 
@@ -89,7 +81,6 @@ class Match(Model):
     score: float = Field(ge=0, le=1)
     coverage: float = Field(ge=0, le=1)
     vector_similarity: float
-    graph_similarity: float | None
     common_dimensions: list[str]
 
 
@@ -101,8 +92,6 @@ class Assessment(Model):
 class RankedGame(Model):
     appid: int
     name: str
-    utility: float
-    pairwise_score: float
     match: Match
     grind: GrindReport
     reasons: list[str] = Field(default_factory=list)
@@ -114,6 +103,5 @@ class RecommendationReport(Model):
     raw_candidates: list[int]
     ranked: list[RankedGame]
     excluded: dict[str, str]
-    pairwise: list[dict]
     sources: list[SourceStatus] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

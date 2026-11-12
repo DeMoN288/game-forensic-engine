@@ -17,7 +17,7 @@ def test_argument_parsing():
 
 
 def test_recommend_json_file_and_exit_code(monkeypatch, tmp_path):
-    report = RecommendationReport(reference=1, raw_candidates=[], ranked=[], excluded={}, pairwise=[])
+    report = RecommendationReport(reference=1, raw_candidates=[], ranked=[], excluded={})
 
     async def run(args):
         assert args.appid == 1

@@ -1,5 +1,7 @@
 # Game Forensic Engine & MCP Server
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+
 Анализ жалоб Steam (EN/RU), выявление гринда (GTI), сопоставление геймплейных циклов (CoreLoop) и нативный **MCP-сервер** (Model Context Protocol) для ИИ-агентов (ZCode, OpenCode, Claude Desktop, Cursor).
 
 ```bash

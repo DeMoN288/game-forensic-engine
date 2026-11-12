@@ -275,3 +275,19 @@ async def test_full_pipeline_with_fixture_transport():
     assert report.ranked[0].grind.gti == 0
     assert report.ranked[0].match.coverage == 1
     assert 0 < report.ranked[0].match.score < 1
+
+
+async def test_store_search_fallback_when_discovery_empty():
+    class SearchTransport(FakeTransport):
+        async def json(self, url, params):
+            if "storesearch" in url:
+                return {"items": [{"id": 2, "name": "Cozy Match"}]}
+            return {}
+
+    ref = game(1)
+    ref.description = "Cozy incremental game with upgrades."
+    cand = game(2)
+    pipeline = FakePipeline({1: ref, 2: cand}, SearchTransport('<div id="recommended_block"></div>'))
+    report = await Matcher(pipeline).recommend(1)
+    assert [r.appid for r in report.ranked] == [2]
+    assert any(s.source == "steam_store_search" and s.status == "ok" for s in report.sources)
