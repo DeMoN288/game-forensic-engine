@@ -45,14 +45,17 @@ CUES = {
          r"быстр\w* бо\w*|реакци\w*|динамичн\w* бо\w*"),
     ),
     "build_depth": (
-        r"fixed (?:loadout|build)|no (?:skill tree|build variety|upgrades?)|фиксирован\w* билд\w*|нет прокачк\w*",
-        (r"skill trees?|build variety|buildcraft\w*|customi[sz]able builds?|upgrade(?:s|able)?|automation|abilities|"
-         r"дерев\w* навыков|вариатив\w* билд\w*|разнообраз\w* билд\w*|прокачк\w*|апгрейд\w*|автоматизац\w*"),
+        r"fixed (?:loadout|build)|no (?:skill tree|build variety|upgrades?)|"
+        r"фиксирован\w* билд\w*|нет прокачк\w*",
+        (r"skill trees?|build variety|buildcraft\w*|customi[sz]able builds?|upgrade(?:s|able)?|"
+         r"automation|abilities|дерев\w* навыков|вариатив\w* билд\w*|разнообраз\w* билд\w*|"
+         r"прокачк\w*|апгрейд\w*|автоматизац\w*"),
     ),
     "tactile_feedback": (
         r"clunky controls?|unresponsive controls?|floaty combat|неотзывчив\w* управлен\w*",
-        (r"responsive controls?|tight controls?|weighty combat|impactful combat|oddly satisfying|very satisfying|"
-         r"physics[- ]based|tactile|отзывчив\w* управлен\w*|ощутим\w* удар\w*|залипательн\w*|тактильн\w*"),
+        (r"responsive controls?|tight controls?|weighty combat|impactful combat|oddly satisfying|"
+         r"very satisfying|physics[- ]based|tactile|отзывчив\w* управлен\w*|ощутим\w* удар\w*|"
+         r"залипательн\w*|тактильн\w*"),
     ),
     "punishment_severity": (
         (r"forgiving|no death penalty|frequent checkpoints?|no timers?|no stress|zero stress|"
@@ -61,7 +64,8 @@ CUES = {
          r"перманентн\w* смерть|потер\w* прогресс\w*|высок\w* цен\w* ошибк\w*"),
     ),
     "narrative_weight": (
-        r"no story|minimal (?:story|narrative)|no plot|minimal plot|pure gameplay|без сюжет\w*|минимальн\w* сюжет\w*",
+        r"no story|minimal (?:story|narrative)|no plot|minimal plot|pure gameplay|"
+        r"без сюжет\w*|минимальн\w* сюжет\w*",
         (r"story[- ]rich|story[- ]driven|narrative[- ]driven|branching (?:story|narrative)|"
          r"сюжетно[- ]ориентирован\w*|глубок\w* сюжет\w*|нелинейн\w* сюжет\w*"),
     ),
@@ -143,7 +147,7 @@ def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoo
         contradictions = 0
         for source, text in texts:
             hits = []
-            for value, pattern in zip((0.15, 0.85), COMPILED_CUES[axis]):
+            for value, pattern in zip((0.15, 0.85), COMPILED_CUES[axis], strict=True):
                 for hit in pattern.finditer(text):
                     if NEGATION.search(text[max(0, hit.start() - 45):hit.start()]):
                         continue
@@ -246,7 +250,8 @@ def store_candidates(html: str, reference: int) -> list[int]:
 
 
 class Matcher:
-    def __init__(self, pipeline: Pipeline, analyzer: Analyzer | None = None, config: MatcherConfig | None = None):
+    def __init__(self, pipeline: Pipeline, analyzer: Analyzer | None = None,
+                 config: MatcherConfig | None = None):
         self.pipeline = pipeline
         self.analyzer = analyzer or Analyzer()
         self.config = config or MatcherConfig()
@@ -255,10 +260,12 @@ class Matcher:
         url = f"https://store.steampowered.com/app/{appid}/"
         try:
             async with asyncio.timeout(self.pipeline.config.source_timeout):
-                html = await self.pipeline.transport.get(url, {"cc": self.pipeline.config.country, "l": "english"})
+                html = await self.pipeline.transport.get(
+                    url, {"cc": self.pipeline.config.country, "l": "english"})
             ids = store_candidates(html, appid)
             return ids, SourceStatus(source="steam_store_similar", url=url, status="ok" if ids else "partial",
-                                     count=len(ids), detail="" if ids else "More Like This block missing/empty")
+                                     count=len(ids),
+                                     detail="" if ids else "More Like This block missing/empty")
         except (SourceError, TimeoutError, ValueError, TypeError) as exc:
             return [], SourceStatus(source="steam_store_similar", url=url, status="unavailable",
                                     detail=type(exc).__name__)
@@ -273,7 +280,7 @@ class Matcher:
         corpus = f"{reference.name} {reference.description}".lower()
         terms = [kw for kw in self._SEARCH_KEYWORDS if kw in corpus][:2]
         if not terms and reference.name:
-            words = [w for w in re.findall(r"[a-zA-Z0-9]{4,}", reference.name)]
+            words = list(re.findall(r"[a-zA-Z0-9]{4,}", reference.name))
             if words:
                 terms = [words[0].lower()]
         if not terms:
@@ -323,15 +330,19 @@ class Matcher:
             ids.extend(search_ids)
             sources.append(status)
         raw = list(dict.fromkeys(i for i in ids if i > 0 and i != appid))
-        excluded = {str(i): f"BLACKLIST: {self.config.blacklist[i]}" for i in raw if i in self.config.blacklist}
+        excluded = {str(i): f"BLACKLIST: {self.config.blacklist[i]}"
+                    for i in raw if i in self.config.blacklist}
         eligible = [i for i in raw if i not in self.config.blacklist]
         selected = eligible[:self.config.max_candidates]
-        excluded.update({str(i): "Не проверен: лимит кандидатов" for i in eligible[self.config.max_candidates:]})
+        excluded.update({str(i): "Не проверен: лимит кандидатов"
+                         for i in eligible[self.config.max_candidates:]})
         warnings = ["GTI и сходство — эвристики, не гарантия безопасности или вероятности понравиться.",
                     "Тактильность оценена по текстовым признакам, не по измерениям управления."]
         reference_loop = extract_loop(reference, self.config.profiles.get(appid))
-        possible_coverage = sum(self.config.weights[a] for a in AXES if a in reference_loop.features
-                                and reference_loop.features[a].confidence > 0) / sum(self.config.weights.values())
+        possible_coverage = sum(self.config.weights[a] for a in AXES
+                                if a in reference_loop.features
+                                and reference_loop.features[a].confidence > 0
+                                ) / sum(self.config.weights.values())
         if possible_coverage < self.config.min_coverage:
             warnings.append("Недостаточно признаков эталона: добавьте профиль пяти осей через --profiles.")
             excluded.update({str(i): "Недостаточно данных геймплейного цикла эталона" for i in selected})
@@ -354,8 +365,11 @@ class Matcher:
                         return None, f"Недостаточно данных геймплейного цикла: покрытие {match.coverage:.0%}"
                     axes = sorted(match.common_dimensions, key=lambda a: (
                         abs(reference_loop.features[a].value - loop.features[a].value), a))
-                    reasons = [f"{LABELS[a]}: совпадение {1 - abs(reference_loop.features[a].value - loop.features[a].value):.0%}"
-                               for a in axes[:3]]
+                    reasons = [
+                        f"{LABELS[a]}: совпадение "
+                        f"{1 - abs(reference_loop.features[a].value - loop.features[a].value):.0%}"
+                        for a in axes[:3]
+                    ]
                     notes = list(report.warnings)
                     notes.append(f"Покрытие осей: {match.coverage:.0%}; {loop.origin}")
                     if report.verdict == "CAUTION":
@@ -370,7 +384,7 @@ class Matcher:
         for start in range(0, len(selected), self.config.concurrency):
             batch = selected[start:start + self.config.concurrency]
             results = await asyncio.gather(*(validate(i) for i in batch))
-            for candidate_id, (item, reason) in zip(batch, results):
+            for candidate_id, (item, reason) in zip(batch, results, strict=True):
                 if item:
                     ranked.append(item)
                 else:

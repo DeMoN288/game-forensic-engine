@@ -9,7 +9,8 @@ from game_forensic.models import RecommendationReport
 
 
 def test_argument_parsing():
-    args = cli.build_parser().parse_args(["recommend", "1091500", "--max-candidates", "8", "--concurrency", "2"])
+    args = cli.build_parser().parse_args(
+        ["recommend", "1091500", "--max-candidates", "8", "--concurrency", "2"])
     assert args.command == "recommend" and args.appid == 1091500
     assert args.max_candidates == 8 and args.concurrency == 2
     with pytest.raises(SystemExit):

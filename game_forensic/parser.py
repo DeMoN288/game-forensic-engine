@@ -60,7 +60,8 @@ class Parser:
                 candidate = (parse_qs(href.query).get("appid") or [None])[0]
             if candidate and candidate.isdigit() and int(candidate) != reference:
                 title = anchor.get_text(" ", strip=True)
-                if re.search(r"\b(demo|soundtrack|prologue|playtest|dedicated server)\b", title, re.IGNORECASE):
+                if re.search(r"\b(demo|soundtrack|prologue|playtest|dedicated server)\b",
+                             title, re.IGNORECASE):
                     continue
                 candidates.append(int(candidate))
         result = list(dict.fromkeys(candidates))

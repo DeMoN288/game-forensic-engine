@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 
 from game_forensic import mcp_server
-from game_forensic.models import Game
 
 
 @pytest.mark.asyncio

@@ -51,8 +51,10 @@ def test_extract_loop_supports_cozy_incremental_cues(make_reviews):
 
 def test_estimate_completion_hours_median():
     reviews = [
-        Review(id="1", text="Beat the game in one sitting!", language="english", positive=True, minutes_at_review=90),
-        Review(id="2", text="Completed 100% achievements.", language="english", positive=True, minutes_at_review=120),
+        Review(id="1", text="Beat the game in one sitting!", language="english", positive=True,
+               minutes_at_review=90),
+        Review(id="2", text="Completed 100% achievements.", language="english", positive=True,
+               minutes_at_review=120),
         Review(id="3", text="Just started playing.", language="english", positive=True, minutes_at_review=15),
     ]
     game = Game(appid=1, name="Short Game", reviews=reviews)

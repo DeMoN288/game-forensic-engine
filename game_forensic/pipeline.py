@@ -154,7 +154,8 @@ class Pipeline:
         game.metadata.update(db)
         game.metadata["review_query_summary"] = summary
         game.metadata["sampling"] = {"filter": "recent", "review_type": "all",
-                                     "languages": self.config.languages, "max_pages": self.config.review_pages}
+                                     "languages": self.config.languages,
+                                     "max_pages": self.config.review_pages}
         if discover:
             peek, status = results[3]
             game.candidate_ids = peek.get("candidate_ids", [])

@@ -316,6 +316,6 @@ def test_precompiled_cues_match_previous_inline_patterns():
     assert set(COMPILED_CUES) == set(CUES)
     for axis, poles in CUES.items():
         assert len(COMPILED_CUES[axis]) == len(poles)
-        for pole, compiled in zip(poles, COMPILED_CUES[axis]):
+        for pole, compiled in zip(poles, COMPILED_CUES[axis], strict=True):
             assert compiled.pattern == r"\b(?:" + pole + r")\b"
             assert compiled.flags & re.IGNORECASE

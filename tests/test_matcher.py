@@ -62,7 +62,8 @@ def test_curated_profiles_and_no_default_values():
 
 
 def test_en_ru_extraction_evidence_and_negation():
-    en = Game(appid=1, description="Fast-paced combat. Skill trees. Responsive controls. Permadeath. Story-rich.")
+    en = Game(appid=1,
+              description="Fast-paced combat. Skill trees. Responsive controls. Permadeath. Story-rich.")
     result = extract_loop(en)
     assert set(result.features) == set(AXES)
     assert all(f.value == 0.85 and f.evidence for f in result.features.values())
@@ -121,7 +122,7 @@ def test_existing_peek_parser():
 
 
 async def test_batch_blacklist_safety_failure_top_five(game, FakePipeline):
-    ids = list(range(2, 13)) + [2, 1]
+    ids = [*range(2, 13), 2, 1]
     games = {i: game(i) for i in range(1, 13)}
     games[1].candidate_ids = ids
     games[3] = game(3, "forced grind pay to win daily chores")

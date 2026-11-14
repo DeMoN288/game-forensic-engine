@@ -180,7 +180,7 @@ def test_corrupt_user_json_is_never_overwritten(tmp_path, contents):
 def test_invalid_utf8_user_json_is_never_overwritten(tmp_path):
     path = tmp_path / "blacklist.json"
     path.write_bytes(b"\xff")
-    with pytest.raises(ValueError, match="blacklist.json"):
+    with pytest.raises(ValueError, match=r"blacklist\.json"):
         set_blacklist(tmp_path, 100, "reason")
     assert path.read_bytes() == b"\xff"
 

@@ -104,10 +104,10 @@ def render_recommendations(report: RecommendationReport) -> str:
 
     def row(cells: list[str]) -> None:
         wrapped = [textwrap.wrap(" ".join(cell.split()), width=width) or [""]
-                   for cell, width in zip(cells, widths)]
+                   for cell, width in zip(cells, widths, strict=True)]
         for n in range(max(map(len, wrapped))):
             lines.append("| " + " | ".join((parts[n] if n < len(parts) else "").ljust(width)
-                                            for parts, width in zip(wrapped, widths)) + " |")
+                                            for parts, width in zip(wrapped, widths, strict=True)) + " |")
         lines.append(border)
 
     row(headers)
@@ -151,7 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "recommend":
             report = asyncio.run(run_recommendation(args))
-            text = report.model_dump_json(indent=2) if args.format == "json" else render_recommendations(report)
+            text = (report.model_dump_json(indent=2) if args.format == "json"
+                    else render_recommendations(report))
             exit_code = 0 if report.ranked else 2
         else:
             assessment = asyncio.run(run_analysis(args))

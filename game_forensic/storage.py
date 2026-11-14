@@ -9,6 +9,7 @@ which is the only way to remove a built-in seed such as Lost Ark.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -55,10 +56,8 @@ def write_json_object(path: Path, payload: dict[str, Any]) -> None:
         temp.write_text(dump_json(payload), encoding="utf-8")
         temp.replace(path)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             temp.unlink()
-        except OSError:
-            pass
 
 
 def _read_for_mutation(path: Path) -> dict[str, Any]:
