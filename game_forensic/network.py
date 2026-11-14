@@ -35,6 +35,13 @@ class SourceError(RuntimeError):
     pass
 
 
+# Cloudflare interstitials and region blocks are returned with HTTP 200.
+BLOCK_MARKERS = (
+    "cf-chl-", "just a moment...", "verify you are human",
+    "this item is currently unavailable in your region",
+)
+
+
 def retry_after(value: str | None) -> float:
     if not value:
         return 0
@@ -105,6 +112,50 @@ class Transport:
             return None
         return None
 
+    async def _read_body(self, host: str, response: httpx.Response) -> str:
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > self.config.max_body:
+                raise SourceError(f"{host}: response too large")
+        return body.decode(response.encoding or "utf-8", errors="replace")
+
+    @staticmethod
+    def _is_block_page(text: str) -> bool:
+        lowered = text.lower()
+        return any(marker in lowered for marker in BLOCK_MARKERS)
+
+    async def _request(self, host: str, route: int, attempt: int, client: httpx.AsyncClient,
+                       url: str, params: dict | None, path: Path) -> tuple[str, str, float]:
+        """One attempt on one route.
+
+        Returns ("done", body, _) on success, ("stop", error, _) when this route is
+        exhausted, or ("retry", error, delay) when another attempt is worthwhile.
+        """
+        async with self.sem, client.stream("GET", url, params=params) as response:
+            status = response.status_code
+            if status == 429:
+                delay = retry_after(response.headers.get("Retry-After"))
+                if delay > self.config.max_retry_after:
+                    raise SourceError(f"{host}: 429; cooldown exceeds configured budget")
+                # Same host cooldown applies to every route, including proxies.
+                delay = max(delay, 2 ** attempt + random.uniform(0, 0.5))
+                self.next_request[host] = max(
+                    self.next_request.get(host, 0), time.monotonic() + delay)
+                return "retry", f"{host}: HTTP 429", delay
+            if status in {401, 403, 451}:
+                return "stop", f"{host}: HTTP {status}; route {route} blocked", 0.0
+            if status >= 500 or status == 408:
+                return "retry", f"{host}: HTTP {status}", 0.0
+            if status >= 400:
+                raise SourceError(f"{host}: HTTP {status}")
+            text = await self._read_body(host, response)
+            if self._is_block_page(text):
+                return "stop", f"{host}: challenge or region-block page", 0.0
+            if self.config.cache_ttl:
+                await asyncio.to_thread(self._write_cache, path, text)
+            return "done", text, 0.0
+
     async def get(self, url: str, params: dict | None = None) -> str:
         path = self._cache_path(url, params)
         if self.config.cache_ttl and path.exists():
@@ -116,45 +167,17 @@ class Transport:
         for route, client in enumerate(self.clients):
             for attempt in range(self.config.attempts):
                 await self._pace(host)
-                delay = 0.0
                 try:
-                    async with self.sem, client.stream("GET", url, params=params) as response:
-                        status = response.status_code
-                        if status == 429:
-                            delay = retry_after(response.headers.get("Retry-After"))
-                            if delay > self.config.max_retry_after:
-                                raise SourceError(f"{host}: 429; cooldown exceeds configured budget")
-                            # Same host cooldown applies to every route, including proxies.
-                            delay = max(delay, 2 ** attempt + random.uniform(0, 0.5))
-                            self.next_request[host] = max(
-                                self.next_request.get(host, 0), time.monotonic() + delay)
-                            last_error = f"{host}: HTTP 429"
-                        elif status in {401, 403, 451}:
-                            last_error = f"{host}: HTTP {status}; route {route} blocked"
-                            break
-                        elif status >= 500 or status == 408:
-                            last_error = f"{host}: HTTP {status}"
-                        elif status >= 400:
-                            raise SourceError(f"{host}: HTTP {status}")
-                        else:
-                            body = bytearray()
-                            async for chunk in response.aiter_bytes():
-                                body.extend(chunk)
-                                if len(body) > self.config.max_body:
-                                    raise SourceError(f"{host}: response too large")
-                            text = body.decode(response.encoding or "utf-8", errors="replace")
-                            if any(marker in text.lower() for marker in (
-                                "cf-chl-", "just a moment...", "verify you are human",
-                                "this item is currently unavailable in your region",
-                            )):
-                                last_error = f"{host}: challenge or region-block page"
-                                break
-                            if self.config.cache_ttl:
-                                await asyncio.to_thread(self._write_cache, path, text)
-                            return text
+                    action, payload, delay = await self._request(
+                        host, route, attempt, client, url, params, path)
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
                     # Library exception strings can contain proxy credentials.
-                    last_error = f"{host}: {type(exc).__name__} on route {route}"
+                    action, payload, delay = "retry", f"{host}: {type(exc).__name__} on route {route}", 0.0
+                if action == "done":
+                    return payload
+                last_error = payload
+                if action == "stop":
+                    break
                 if attempt + 1 < self.config.attempts:
                     await asyncio.sleep(max(delay, 2 ** attempt + random.uniform(0, 0.5)))
         raise SourceError(last_error)

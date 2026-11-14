@@ -45,6 +45,31 @@ class Pipeline:
         except (ValueError, TypeError, KeyError) as exc:
             return {}, SourceStatus(source="steam_store", url=url, status="parse_error", detail=str(exc))
 
+    async def _page_payload(self, appid: int, cursor: str, legacy: bool) -> dict:
+        """One page of reviews from the modern endpoint, or from the deprecated one."""
+        if legacy:
+            return await self._legacy(appid, cursor)
+        payload = await self.transport.json(NEW_REVIEWS, {"input_json": json.dumps({
+            "appid": appid, "filter": 1, "languages": self.config.languages,
+            "cursor": cursor, "review_type": 0, "purchase_type": 1,
+            "num_per_page": self.config.page_size, "filter_offtopic_activity": True,
+        })})
+        return payload.get("response", payload)
+
+    def _collect_page(self, reviews: dict[str, Review], items: list) -> int:
+        """Parse one page into `reviews`; returns how many items were unusable."""
+        malformed = 0
+        for item in items:
+            try:
+                review = self.parser.review(item)
+            except (ValueError, TypeError, KeyError):
+                malformed += 1
+                continue
+            # Legacy endpoint fetches all languages; filter locally.
+            if "all" in self.config.languages or review.language in self.config.languages:
+                reviews[review.id] = review
+        return malformed
+
     async def _reviews(self, appid: int) -> tuple[list[Review], SourceStatus, dict]:
         reviews: dict[str, Review] = {}
         cursor = "*"
@@ -59,15 +84,7 @@ class Pipeline:
             async with asyncio.timeout(self.config.source_timeout):
                 for page in range(self.config.review_pages):
                     try:
-                        if legacy:
-                            payload = await self._legacy(appid, cursor)
-                        else:
-                            payload = await self.transport.json(NEW_REVIEWS, {"input_json": json.dumps({
-                                "appid": appid, "filter": 1, "languages": self.config.languages,
-                                "cursor": cursor, "review_type": 0, "purchase_type": 1,
-                                "num_per_page": self.config.page_size, "filter_offtopic_activity": True,
-                            })})
-                            payload = payload.get("response", payload)
+                        payload = await self._page_payload(appid, cursor, legacy)
                     except SourceError:
                         if legacy or not self.config.allow_legacy_reviews:
                             raise
@@ -80,14 +97,7 @@ class Pipeline:
                     if page == 0:
                         summary = payload.get("query_summary", {})
                     items = payload["reviews"]
-                    for item in items:
-                        try:
-                            review = self.parser.review(item)
-                            # Legacy endpoint fetches all languages; filter locally.
-                            if "all" in self.config.languages or review.language in self.config.languages:
-                                reviews[review.id] = review
-                        except (ValueError, TypeError, KeyError):
-                            malformed += 1
+                    malformed += self._collect_page(reviews, items)
                     new_cursor = payload.get("cursor")
                     if not items:
                         finished = True

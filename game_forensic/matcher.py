@@ -114,16 +114,66 @@ class MatcherConfig(Model):
 
     @model_validator(mode="after")
     def validate_axes(self) -> MatcherConfig:
+        self._validate_weights()
+        self._validate_blacklist()
+        self._validate_profiles()
+        return self
+
+    def _validate_weights(self) -> None:
         if set(self.weights) != set(AXES) or any(not 0 < w < float("inf") for w in self.weights.values()):
             raise ValueError("Weights must contain all five axes with finite positive values")
+
+    def _validate_blacklist(self) -> None:
         if any(appid <= 0 or not reason.strip() for appid, reason in self.blacklist.items()):
             raise ValueError("Blacklist requires positive AppIDs and nonempty reasons")
+
+    def _validate_profiles(self) -> None:
         for appid, profile in self.profiles.items():
             if appid <= 0 or not profile or not set(profile) <= set(AXES):
                 raise ValueError("Profiles require positive AppIDs and known axes")
             if any(not 0 <= value <= 1 for value in profile.values()):
                 raise ValueError("Axis values must be finite and in [0, 1]")
-        return self
+
+
+def _observation_texts(game: Game) -> list[tuple[str, str]]:
+    """One labelled observation per store description and per unique supported review."""
+    texts = [("store", game.description)]
+    seen = set()
+    for review in game.reviews:
+        if review.id not in seen and review.language in SUPPORTED_LANGUAGES:
+            texts.append((f"review:{review.id}", review.text))
+            seen.add(review.id)
+    return texts
+
+
+def _cue_observation(axis: str, texts: list[tuple[str, str]]) -> Feature | None:
+    """Aggregate both poles of one axis across all observations, or None if unmentioned.
+
+    A text mentioning both poles averages them and counts as a contradiction, which
+    lowers confidence instead of being discarded.
+    """
+    observations, evidence = [], []
+    contradictions = 0
+    for source, text in texts:
+        hits = []
+        for value, pattern in zip((0.15, 0.85), COMPILED_CUES[axis], strict=True):
+            for hit in pattern.finditer(text):
+                if NEGATION.search(text[max(0, hit.start() - 45):hit.start()]):
+                    continue
+                hits.append(value)
+                if len(evidence) < 4:
+                    evidence.append(f"{source}: {hit.group(0)}")
+                break
+        if hits:
+            observations.append(sum(hits) / len(hits))
+            contradictions += len(hits) > 1
+    if not observations:
+        return None
+    value = sum(observations) / len(observations)
+    disagreement = sum(abs(x - value) for x in observations) / len(observations)
+    confidence = (min(0.85, 0.45 + 0.08 * (len(observations) - 1)) * (1 - disagreement)
+                  * (1 - 0.5 * contradictions / len(observations)))
+    return Feature(value=value, confidence=confidence, evidence=evidence)
 
 
 def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoop:
@@ -134,36 +184,13 @@ def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoo
     """
     features = {axis: feature.model_copy(deep=True) for axis, feature in game.loop.features.items()
                 if axis in AXES}
-    texts = [("store", game.description)]
-    seen = set()
-    for review in game.reviews:
-        if review.id not in seen and review.language in SUPPORTED_LANGUAGES:
-            texts.append((f"review:{review.id}", review.text))
-            seen.add(review.id)
+    texts = _observation_texts(game)
     for axis in CUES:
         if axis in features:
             continue
-        observations, evidence = [], []
-        contradictions = 0
-        for source, text in texts:
-            hits = []
-            for value, pattern in zip((0.15, 0.85), COMPILED_CUES[axis], strict=True):
-                for hit in pattern.finditer(text):
-                    if NEGATION.search(text[max(0, hit.start() - 45):hit.start()]):
-                        continue
-                    hits.append(value)
-                    if len(evidence) < 4:
-                        evidence.append(f"{source}: {hit.group(0)}")
-                    break
-            if hits:
-                observations.append(sum(hits) / len(hits))
-                contradictions += len(hits) > 1
-        if observations:
-            value = sum(observations) / len(observations)
-            disagreement = sum(abs(x - value) for x in observations) / len(observations)
-            confidence = (min(0.85, 0.45 + 0.08 * (len(observations) - 1)) * (1 - disagreement)
-                          * (1 - 0.5 * contradictions / len(observations)))
-            features[axis] = Feature(value=value, confidence=confidence, evidence=evidence)
+        feature = _cue_observation(axis, texts)
+        if feature is not None:
+            features[axis] = feature
     categories_text = " | ".join(
         str(cat.get("description", ""))
         for cat in (game.metadata.get("categories") or [])
@@ -306,6 +333,69 @@ class Matcher:
             return [], SourceStatus(source="steam_store_search", url=url, status="unavailable",
                                     detail=type(exc).__name__)
 
+    async def _candidate_ids(self, appid: int, reference: Game) -> tuple[list[int], list[SourceStatus]]:
+        """Raw candidate AppIDs for the reference, padded by store discovery when thin."""
+        sources: list[SourceStatus] = []
+        ids = list(reference.candidate_ids)
+        if len(set(ids) - {appid}) < self.config.max_candidates:
+            extra, status = await self._store_candidates(appid)
+            ids.extend(extra)
+            sources.append(status)
+        if not (set(ids) - {appid}) and hasattr(self.pipeline.transport, "json"):
+            search_ids, status = await self._store_search_candidates(reference)
+            ids.extend(search_ids)
+            sources.append(status)
+        return list(dict.fromkeys(i for i in ids if i > 0 and i != appid)), sources
+
+    async def _validate_candidate(self, candidate_id: int, reference_loop: CoreLoop
+                                  ) -> tuple[RankedGame | None, str | None]:
+        """Safety-gate and score one candidate; `(None, reason)` when it is excluded."""
+        try:
+            async with asyncio.timeout(self.config.candidate_timeout):
+                game = await self.pipeline.collect(candidate_id)
+                report = await asyncio.to_thread(self.analyzer.analyze, game)
+                reason = rejection_reason(report)
+                if reason:
+                    return None, reason
+                if not game.name:
+                    return None, "Steam Store не подтвердил базовую игру и её название"
+                loop = extract_loop(game, self.config.profiles.get(candidate_id))
+                match = match_loops(reference_loop, loop, self.config.weights)
+                if match.coverage < self.config.min_coverage:
+                    return None, f"Недостаточно данных геймплейного цикла: покрытие {match.coverage:.0%}"
+                axes = sorted(match.common_dimensions, key=lambda a: (
+                    abs(reference_loop.features[a].value - loop.features[a].value), a))
+                reasons = [
+                    f"{LABELS[a]}: совпадение "
+                    f"{1 - abs(reference_loop.features[a].value - loop.features[a].value):.0%}"
+                    for a in axes[:3]
+                ]
+                notes = list(report.warnings)
+                notes.append(f"Покрытие осей: {match.coverage:.0%}; {loop.origin}")
+                if report.verdict == "CAUTION":
+                    notes.insert(0, "CAUTION: жалобы на гринд; таймгейты/P2W не обнаружены в выборке")
+                return RankedGame(appid=game.appid, name=game.name, match=match, grind=report,
+                                  reasons=reasons, warnings=notes), None
+        except (SourceError, TimeoutError, OSError, ValueError, TypeError, KeyError) as exc:
+            return None, f"Ошибка проверки: {type(exc).__name__}"
+
+    async def _rank(self, selected: list[int], reference_loop: CoreLoop,
+                    excluded: dict[str, str]) -> list[RankedGame]:
+        """Validate every selected candidate in bounded batches, recording exclusions."""
+        ranked: list[RankedGame] = []
+        # Bounded batches prevent a task explosion; Pipeline/Transport also limit concurrency.
+        for start in range(0, len(selected), self.config.concurrency):
+            batch = selected[start:start + self.config.concurrency]
+            results = await asyncio.gather(
+                *(self._validate_candidate(i, reference_loop) for i in batch))
+            for candidate_id, (item, reason) in zip(batch, results, strict=True):
+                if item:
+                    ranked.append(item)
+                else:
+                    excluded[str(candidate_id)] = reason or "Проверка не завершена"
+        ranked.sort(key=lambda item: (-item.match.score, item.grind.gti, item.appid))
+        return ranked
+
     async def recommend(self, appid: int) -> RecommendationReport:
         reference = await self.pipeline.collect(appid, discover=True)
         sources = list(reference.sources)
@@ -320,16 +410,8 @@ class Matcher:
                 sources=sources,
                 warnings=[reason],
             )
-        ids = list(reference.candidate_ids)
-        if len(set(ids) - {appid}) < self.config.max_candidates:
-            extra, status = await self._store_candidates(appid)
-            ids.extend(extra)
-            sources.append(status)
-        if not (set(ids) - {appid}) and hasattr(self.pipeline.transport, "json"):
-            search_ids, status = await self._store_search_candidates(reference)
-            ids.extend(search_ids)
-            sources.append(status)
-        raw = list(dict.fromkeys(i for i in ids if i > 0 and i != appid))
+        raw, discovered = await self._candidate_ids(appid, reference)
+        sources.extend(discovered)
         excluded = {str(i): f"BLACKLIST: {self.config.blacklist[i]}"
                     for i in raw if i in self.config.blacklist}
         eligible = [i for i in raw if i not in self.config.blacklist]
@@ -349,47 +431,7 @@ class Matcher:
             return RecommendationReport(reference=appid, raw_candidates=raw, ranked=[], excluded=excluded,
                                         sources=sources, warnings=warnings)
 
-        async def validate(candidate_id: int) -> tuple[RankedGame | None, str | None]:
-            try:
-                async with asyncio.timeout(self.config.candidate_timeout):
-                    game = await self.pipeline.collect(candidate_id)
-                    report = await asyncio.to_thread(self.analyzer.analyze, game)
-                    reason = rejection_reason(report)
-                    if reason:
-                        return None, reason
-                    if not game.name:
-                        return None, "Steam Store не подтвердил базовую игру и её название"
-                    loop = extract_loop(game, self.config.profiles.get(candidate_id))
-                    match = match_loops(reference_loop, loop, self.config.weights)
-                    if match.coverage < self.config.min_coverage:
-                        return None, f"Недостаточно данных геймплейного цикла: покрытие {match.coverage:.0%}"
-                    axes = sorted(match.common_dimensions, key=lambda a: (
-                        abs(reference_loop.features[a].value - loop.features[a].value), a))
-                    reasons = [
-                        f"{LABELS[a]}: совпадение "
-                        f"{1 - abs(reference_loop.features[a].value - loop.features[a].value):.0%}"
-                        for a in axes[:3]
-                    ]
-                    notes = list(report.warnings)
-                    notes.append(f"Покрытие осей: {match.coverage:.0%}; {loop.origin}")
-                    if report.verdict == "CAUTION":
-                        notes.insert(0, "CAUTION: жалобы на гринд; таймгейты/P2W не обнаружены в выборке")
-                    return RankedGame(appid=game.appid, name=game.name, match=match, grind=report,
-                                      reasons=reasons, warnings=notes), None
-            except (SourceError, TimeoutError, OSError, ValueError, TypeError, KeyError) as exc:
-                return None, f"Ошибка проверки: {type(exc).__name__}"
-
-        ranked = []
-        # Bounded batches prevent a task explosion; Pipeline/Transport also limit concurrency.
-        for start in range(0, len(selected), self.config.concurrency):
-            batch = selected[start:start + self.config.concurrency]
-            results = await asyncio.gather(*(validate(i) for i in batch))
-            for candidate_id, (item, reason) in zip(batch, results, strict=True):
-                if item:
-                    ranked.append(item)
-                else:
-                    excluded[str(candidate_id)] = reason or "Проверка не завершена"
-        ranked.sort(key=lambda item: (-item.match.score, item.grind.gti, item.appid))
+        ranked = await self._rank(selected, reference_loop, excluded)
         if not ranked:
             warnings.append("Нет кандидатов, прошедших проверку безопасности и покрытия осей.")
         selected_ranked = ranked[:self.config.top_k]
