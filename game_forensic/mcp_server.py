@@ -12,6 +12,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 from .analyzer import SUPPORTED_LANGUAGES, Analyzer, AnalyzerConfig
+from .feedback import load_rejection_penalties, record_rejection
 from .hltb import fetch_hltb_times
 from .itch import analyze_itch_game, search_itch_games
 from .matcher import (
@@ -23,10 +24,11 @@ from .matcher import (
     extract_loop,
     match_loops,
 )
-from .models import GrindReport, Match
+from .models import CoreLoop, GrindReport, Match
 from .network import NetworkConfig, SourceError, Transport
 from .pipeline import Pipeline, PipelineConfig
 from .policy import SafetyPolicy, safety_gate
+from .presets import get_preset, score_candidate_with_preset
 from .steam import search_by_tag
 from .storage import (
     data_dir,
@@ -61,6 +63,17 @@ def _require_finite(value: float, name: str) -> float:
     if not math.isfinite(result):
         raise ValueError(f"{name} must be a finite number")
     return result
+
+
+async def _bounded_gather(coros: list[Any], concurrency: int) -> list[Any]:
+    """Run coroutines with bounded concurrency, preserving input order."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _run(coro: Any) -> Any:
+        async with sem:
+            return await coro
+
+    return await asyncio.gather(*(_run(coro) for coro in coros))
 
 
 def synergy_verdict(
@@ -623,6 +636,7 @@ async def steam_blacklist_add(
         appid, resolved_name = await _resolve_appid(transport, game)
 
     set_blacklist(data_dir(), appid, reason.strip())
+    rejected = record_rejection(appid, reason.strip())
 
     return dump_json(
         {
@@ -630,6 +644,7 @@ async def steam_blacklist_add(
             "appid": appid,
             "name": resolved_name,
             "reason": reason.strip(),
+            "learned_reason_code": rejected["reason_code"],
         }
     )
 
@@ -651,6 +666,46 @@ async def steam_blacklist_remove(game: str | int) -> str:
             "status": "still_blacklisted" if still_listed else "removed",
             "appid": appid,
             "name": resolved_name,
+        }
+    )
+
+
+@mcp.tool()
+async def steam_dislike_feedback(
+    game: str | int,
+    reason: str,
+    tags: list[str] | None = None,
+) -> str:
+    """Record a game rejection to train the personal preference profile.
+
+    The free-text reason is normalized to a reason code ("grind", "repetitive",
+    "too_hard", "too_long", "already_played", "other") and folded into cumulative
+    axis/tag/length penalties used by `recommend_by_preset`.
+
+    Args:
+        game: Steam AppID or Game Name.
+        reason: Why the game was rejected (a code or free text, EN or RU).
+        tags: Optional Steam tags or mechanics that contributed to the dislike.
+    """
+    if not reason.strip():
+        raise ValueError("Reason must not be empty")
+
+    net_config = NetworkConfig(timeout=20)
+    async with Transport(net_config) as transport:
+        appid, resolved_name = await _resolve_appid(transport, game)
+
+    entry = record_rejection(appid, reason, tags=tags)
+    penalties = load_rejection_penalties()
+    return dump_json(
+        {
+            "status": "recorded",
+            "appid": appid,
+            "name": resolved_name,
+            "reason_code": entry["reason_code"],
+            "penalties_applied": {
+                key: value for key, value in penalties.items() if key != "warnings"
+            },
+            "warnings": penalties.get("warnings", []),
         }
     )
 
@@ -688,6 +743,199 @@ async def steam_profile_set(
             "appid": appid,
             "name": resolved_name,
             "axes": merged,
+        }
+    )
+
+
+@mcp.tool()
+async def recommend_by_preset(
+    preset: str = "tactile_incremental",
+    source: str = "both",
+    max_hours: float = 3.0,
+    limit: int = 5,
+) -> str:
+    """Rank Steam and/or itch.io games against a curated mechanic preset.
+
+    Candidates come from the preset's Steam tags (`search_by_tag`) and itch.io tag
+    (`search_itch_games`). Each is analyzed with bounded concurrency, pulled through
+    `fetch_hltb_times`, re-ranked by `score_candidate_with_preset` (CoreLoop match,
+    GTI and cumulative learned penalties), and filtered to games whose known length
+    stays at or below `max_hours`.
+
+    Args:
+        preset: One of "perspective", "meta_narrative", "tactile_incremental".
+        source: "steam", "itch" or "both" (default).
+        max_hours: Hard ceiling on known completion hours (default 3.0).
+        limit: Maximum number of ranked results to return (1-25, default 5).
+    """
+    preset_obj = get_preset(preset)
+    source = source.strip().casefold()
+    if source not in {"both", "steam", "itch"}:
+        raise ValueError("source must be one of: 'steam', 'itch', 'both'")
+    max_hours = _require_finite(max_hours, "max_hours")
+    if max_hours <= 0:
+        raise ValueError("max_hours must be positive")
+    safe_limit = min(max(limit, 1), 25)
+    candidate_cap = min(safe_limit * 2, 16)
+    blacklist, profiles, load_warnings = user_state()
+    penalties = load_rejection_penalties()
+
+    steam_items: list[dict[str, Any]] = []
+    itch_cards: list[Any] = []
+
+    async with Transport(NetworkConfig(timeout=30)) as transport:
+        if source in {"both", "steam"}:
+            seen: set[int] = set()
+            for tag in preset_obj.steam_tags:
+                try:
+                    result = await search_by_tag(transport, tag, limit=safe_limit)
+                except (SourceError, ValueError, TypeError, KeyError, OSError):
+                    continue
+                for item in result.get("items", []):
+                    appid = item.get("appid")
+                    if (
+                        isinstance(appid, int)
+                        and not isinstance(appid, bool)
+                        and appid not in seen
+                    ):
+                        seen.add(appid)
+                        steam_items.append(item)
+        if source in {"both", "itch"}:
+            cards = await search_itch_games(tag=preset_obj.itch_tag, sort="popular")
+            itch_cards = cards[:candidate_cap]
+
+        pipeline = Pipeline(
+            transport,
+            PipelineConfig(
+                review_pages=1,
+                languages=["english", "russian"],
+                enable_steampeek=False,
+                enable_steamdb=False,
+            ),
+        )
+        analyzer = Analyzer(AnalyzerConfig())
+
+        async def analyze_steam(item: dict[str, Any]) -> dict[str, Any]:
+            appid = item["appid"]
+            name = item.get("name", "")
+            if appid in blacklist:
+                return {"appid": appid, "name": name, "source": "steam",
+                        "excluded": f"BLACKLIST: {blacklist[appid]}"}
+            try:
+                gdata = await pipeline.collect(appid, discover=False)
+                if not gdata.name.strip():
+                    return {"appid": appid, "name": name, "source": "steam",
+                            "excluded": "Steam Store не подтвердил название"}
+                grind = await asyncio.to_thread(analyzer.analyze, gdata)
+                loop = extract_loop(gdata, profiles.get(appid))
+                hltb = await fetch_hltb_times(gdata.name, appid=appid)
+                hours = (
+                    hltb.main_hours
+                    if hltb and hltb.main_hours is not None
+                    else estimate_completion_hours(gdata)
+                )
+                return {
+                    "appid": appid,
+                    "name": gdata.name,
+                    "source": "steam",
+                    "gti": grind.gti if grind.gti is not None else 0.0,
+                    "loop": loop,
+                    "hours": hours,
+                    "completion_source": (
+                        "howlongtobeat"
+                        if hltb and hltb.main_hours is not None
+                        else "steam_reviews_estimate"
+                    ),
+                }
+            except (SourceError, TimeoutError, OSError, ValueError, TypeError, KeyError) as exc:
+                return {"appid": appid, "name": name, "source": "steam",
+                        "excluded": f"Ошибка проверки: {type(exc).__name__}"}
+
+        async def analyze_itch(card: Any) -> dict[str, Any]:
+            try:
+                analyzed = await analyze_itch_game(card.url, title=card.title)
+            except (SourceError, OSError, ValueError, TypeError, KeyError) as exc:
+                return {"name": card.title, "source": "itch",
+                        "excluded": f"Ошибка проверки: {type(exc).__name__}"}
+            return {
+                "name": analyzed.title or card.title,
+                "source": "itch",
+                "url": card.url,
+                "genre": card.genre,
+                "price": card.price,
+                "platforms": card.platforms,
+                "is_downloadable": card.is_downloadable,
+                "is_browser": card.is_browser,
+                "gti": analyzed.gti_score,
+                "loop": CoreLoop(),
+                "hours": analyzed.estimated_hours,
+                "completion_source": analyzed.duration_source,
+                "comments_count": analyzed.comments_count,
+            }
+
+        coros = [analyze_steam(item) for item in steam_items]
+        coros += [analyze_itch(card) for card in itch_cards]
+        analyzed = await _bounded_gather(coros, concurrency=3)
+
+    excluded: list[dict[str, Any]] = []
+    scored: list[dict[str, Any]] = []
+    for result in analyzed:
+        if result.get("excluded"):
+            excluded.append(
+                {"appid": result.get("appid"), "name": result["name"],
+                 "reason": result["excluded"]}
+            )
+            continue
+        hours = result.get("hours")
+        if hours is not None and hours > max_hours:
+            excluded.append(
+                {"appid": result.get("appid"), "name": result["name"],
+                 "reason": "OVER_LENGTH"}
+            )
+            continue
+        score, reasons = score_candidate_with_preset(
+            preset, result["gti"], result["loop"], hours, max_hours, penalties
+        )
+        item: dict[str, Any] = {
+            "appid": result.get("appid"),
+            "name": result["name"],
+            "source": result["source"],
+            "score": score,
+            "reasons": reasons,
+            "gti_score": result["gti"],
+            "estimated_completion_hours": hours,
+            "completion_source": result["completion_source"],
+        }
+        if result["source"] == "itch":
+            item.update(
+                url=result["url"],
+                genre=result["genre"],
+                price=result["price"],
+                platforms=result["platforms"],
+                comments_count=result["comments_count"],
+            )
+        scored.append(item)
+
+    scored.sort(
+        key=lambda it: (
+            -it["score"],
+            it["estimated_completion_hours"] is None,
+            str(it["name"]),
+        )
+    )
+    scored = scored[:safe_limit]
+
+    return dump_json(
+        {
+            "preset": preset,
+            "preset_name": preset_obj.name,
+            "penalties_applied": {
+                key: value for key, value in penalties.items() if key != "warnings"
+            },
+            "count": len(scored),
+            "items": scored,
+            "excluded": excluded,
+            "warnings": [*load_warnings, *penalties.get("warnings", [])],
         }
     )
 
