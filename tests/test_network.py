@@ -135,6 +135,43 @@ async def test_transport_rejects_oversized_body(monkeypatch, tmp_path):
             await transport.get("https://example.test/data")
 
 
+async def test_reviews_missing_key_ends_the_sample_without_a_failure():
+    """The live service drops the `reviews` key once the cursor is exhausted."""
+
+    class _Transport:
+        async def json(self, url, params):
+            if json.loads(params["input_json"])["cursor"] == "*":
+                return {"response": {
+                    "query_summary": {"total_reviews": 1},
+                    "reviews": [{"recommendationid": "1", "voted_up": True,
+                                 "review": "good", "language": "english"}],
+                    "cursor": "next",
+                }}
+            return {"response": {"query_summary": {"num_reviews": 0}, "cursor": "next",
+                                 "total_matching": 1}}
+
+    pipeline = Pipeline(_Transport(), PipelineConfig(review_pages=3))
+    reviews, status, summary = await pipeline._reviews(100)
+
+    assert len(reviews) == 1
+    assert status.status == "ok"
+    assert status.detail == ""
+    assert summary == {"total_reviews": 1}
+
+
+async def test_reviews_wrong_type_is_reported_as_a_failure():
+    class _Transport:
+        async def json(self, url, params):
+            return {"response": {"query_summary": {}, "reviews": "not-a-list"}}
+
+    pipeline = Pipeline(_Transport(), PipelineConfig(review_pages=1))
+    reviews, status, _summary = await pipeline._reviews(100)
+
+    assert reviews == []
+    assert status.status == "unavailable"
+    assert "TypeError" in status.detail
+
+
 async def test_reviews_pagination_stops_on_empty_page():
     cursors = []
 

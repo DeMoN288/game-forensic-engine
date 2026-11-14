@@ -92,11 +92,15 @@ class Pipeline:
                         source_url = f"https://store.steampowered.com/appreviews/{appid}"
                         warnings.append("New reviews service unavailable; deprecated endpoint fallback")
                         payload = await self._legacy(appid, cursor)
-                    if not isinstance(payload.get("reviews"), list):
-                        raise TypeError("reviews array missing")
                     if page == 0:
                         summary = payload.get("query_summary", {})
-                    items = payload["reviews"]
+                    items = payload.get("reviews")
+                    if items is None:
+                        # The live service drops the key once the cursor is exhausted.
+                        finished = True
+                        break
+                    if not isinstance(items, list):
+                        raise TypeError("reviews array missing")
                     malformed += self._collect_page(reviews, items)
                     new_cursor = payload.get("cursor")
                     if not items:

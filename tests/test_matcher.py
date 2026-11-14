@@ -201,6 +201,53 @@ async def test_candidate_timeout_is_isolated(game, FakePipeline):
     assert pipeline.active == 0
 
 
+async def test_every_raw_candidate_is_ranked_or_explicitly_excluded(game, FakePipeline, FakeTransport):
+    """`raw_candidates` is the denominator: no validated candidate may vanish silently."""
+    scenarios = {}
+
+    # Twelve candidates, five of them ranked: the overflow must be named, not dropped.
+    many = {i: game(i) for i in range(1, 13)}
+    many[1].candidate_ids = list(range(2, 13))
+    scenarios["overflow past top-k"] = (Matcher(FakePipeline(many)), 1)
+
+    # Nothing survives the safety gate.
+    blocked = {1: game(1, candidates=[2]), 2: game(2, "forced grind pay to win daily chores")}
+    scenarios["no survivors"] = (Matcher(FakePipeline(blocked)), 1)
+
+    # The reference has no confirmed Store name.
+    unnamed = {1: game(1, candidates=[2, 3]), 2: game(2), 3: game(3)}
+    unnamed[1].name = "   "
+    scenarios["reference unconfirmed"] = (Matcher(FakePipeline(unnamed)), 1)
+
+    # The reference lacks the axes needed for any comparison.
+    thin = {1: game(1, candidates=[2], features=False), 2: game(2)}
+    scenarios["reference too thin"] = (Matcher(FakePipeline(thin)), 1)
+
+    # Store discovery contributed nothing beyond the reference itself.
+    lonely = Matcher(FakePipeline({1: game(1)}, FakeTransport(fail=True)))
+    scenarios["no candidates"] = (lonely, 1)
+
+    for label, (matcher, appid) in scenarios.items():
+        report = await matcher.recommend(appid)
+        ranked = [item.appid for item in report.ranked]
+        accounted = {*ranked, *(int(key) for key in report.excluded)}
+        assert accounted == set(report.raw_candidates), label
+        assert len(ranked) + len(report.excluded) == len(report.raw_candidates), label
+
+
+async def test_validated_overflow_is_excluded_with_a_top_k_reason(game, FakePipeline):
+    games = {i: game(i) for i in range(1, 13)}
+    games[1].candidate_ids = list(range(2, 13))
+
+    report = await Matcher(FakePipeline(games)).recommend(1)
+
+    ranked = [item.appid for item in report.ranked]
+    overflow = {key: reason for key, reason in report.excluded.items() if "топ-5" in reason}
+    assert ranked == [2, 3, 4, 5, 6]
+    assert set(overflow) == {str(i) for i in range(7, 13)}
+    assert all("сходство" in reason for reason in overflow.values())
+
+
 async def test_full_pipeline_with_fixture_transport():
     description = "Fast-paced combat. Skill trees. Responsive controls. Permadeath. Story-rich."
 
