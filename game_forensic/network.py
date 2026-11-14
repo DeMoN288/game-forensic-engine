@@ -87,15 +87,30 @@ class Transport:
         key = json.dumps([url, params], sort_keys=True, ensure_ascii=False)
         return self.config.cache_dir / (hashlib.sha256(key.encode()).hexdigest() + ".json")
 
+    @staticmethod
+    def _read_cache(path: Path, ttl: int) -> str | None:
+        """Cached body when the entry is a fresh object with a string body, else None.
+
+        Any malformed cache (truncated JSON, wrong shape, non-string body) simply means
+        "no cache": the caller falls through to the network instead of failing.
+        """
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(cached, dict):
+                return None
+            body = cached["body"]
+            if isinstance(body, str) and time.time() - cached["time"] < ttl:
+                return body
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        return None
+
     async def get(self, url: str, params: dict | None = None) -> str:
         path = self._cache_path(url, params)
         if self.config.cache_ttl and path.exists():
-            try:
-                cached = await asyncio.to_thread(lambda: json.loads(path.read_text(encoding="utf-8")))
-                if time.time() - cached["time"] < self.config.cache_ttl:
-                    return cached["body"]
-            except (OSError, ValueError, KeyError):
-                pass
+            cached = await asyncio.to_thread(self._read_cache, path, self.config.cache_ttl)
+            if cached is not None:
+                return cached
         host = urlsplit(url).netloc
         last_error = "no routes"
         for route, client in enumerate(self.clients):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from statistics import median
 
 from bs4 import BeautifulSoup
 from pydantic import Field, model_validator
@@ -81,8 +82,17 @@ COMPILED_CUES = {
     for axis, poles in CUES.items()
 }
 COMPLETION_CUE = re.compile(
-    r"\b(?:beat (?:the|this) game|finished|completed|100%|all achievements?|one sitting)\b|"
+    r"\b(?:beat (?:the|this) game|finished|completed|all achievements?|one sitting)\b|"
+    r"(?<!\d)100\s?%|"
     r"прош[её]л|пройдена|на 100%|все достижения|за один присест",
+    re.IGNORECASE,
+)
+# Negation immediately before the cue ("never finished", "не прошёл"). The character class
+# is deliberately narrow: a wide window would read "never thought I'd say this, but I finished"
+# as an uncompleted game and drop genuine completion evidence.
+COMPLETION_NEGATION = re.compile(
+    r"\b(?:never|not|no|haven'?t|hasn'?t|hadn'?t|didn'?t|don'?t|doesn'?t|without|не|ни)\b"
+    r"[\s\w'\u2019-]{0,15}$",
     re.IGNORECASE,
 )
 NEGATION = re.compile(r"(?:\b(?:no|not|without)|\b(?:не|нет|без))\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
@@ -171,14 +181,25 @@ def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoo
     return CoreLoop(features=features, origin="curated" if profile else game.loop.origin)
 
 
+def _confirms_completion(text: str) -> bool:
+    """True when a completion cue is stated outright rather than negated.
+
+    Only the 60 characters before a cue are inspected: negations further back belong
+    to a different clause and say nothing about whether the player finished.
+    """
+    for hit in COMPLETION_CUE.finditer(text):
+        window = text[max(0, hit.start() - 60):hit.start()]
+        if not COMPLETION_NEGATION.search(window):
+            return True
+    return False
+
+
 def estimate_completion_hours(game: Game) -> float | None:
     """Estimate median completion playtime (hours) from reviews mentioning finishing the game."""
-    from statistics import median
-
     hours = [
         r.minutes_at_review / 60
         for r in game.reviews
-        if r.minutes_at_review is not None and r.minutes_at_review > 0 and COMPLETION_CUE.search(r.text)
+        if r.minutes_at_review is not None and r.minutes_at_review > 0 and _confirms_completion(r.text)
     ]
     return round(median(hours), 1) if hours else None
 
