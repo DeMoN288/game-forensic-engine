@@ -25,6 +25,7 @@ from .models import (
 )
 from .network import SourceError
 from .pipeline import Pipeline
+from .policy import SafetyPolicy, safety_gate
 
 AXES = ("combat_pace", "build_depth", "tactile_feedback", "punishment_severity", "narrative_weight")
 LABELS = {
@@ -74,6 +75,11 @@ METADATA_CUES = {
         0.15,
     ),
 }
+# Compiled once: `extract_loop` scans every axis against every review text.
+COMPILED_CUES = {
+    axis: tuple(re.compile(r"\b(?:" + pole + r")\b", re.IGNORECASE) for pole in poles)
+    for axis, poles in CUES.items()
+}
 COMPLETION_CUE = re.compile(
     r"\b(?:beat (?:the|this) game|finished|completed|100%|all achievements?|one sitting)\b|"
     r"прош[её]л|пройдена|на 100%|все достижения|за один присест",
@@ -120,15 +126,15 @@ def extract_loop(game: Game, profile: dict[str, float] | None = None) -> CoreLoo
         if review.id not in seen and review.language in SUPPORTED_LANGUAGES:
             texts.append((f"review:{review.id}", review.text))
             seen.add(review.id)
-    for axis, poles in CUES.items():
+    for axis in CUES:
         if axis in features:
             continue
         observations, evidence = [], []
         contradictions = 0
         for source, text in texts:
             hits = []
-            for value, pattern in zip((0.15, 0.85), poles):
-                for hit in re.finditer(r"\b(?:" + pattern + r")\b", text, re.IGNORECASE):
+            for value, pattern in zip((0.15, 0.85), COMPILED_CUES[axis]):
+                for hit in pattern.finditer(text):
                     if NEGATION.search(text[max(0, hit.start() - 45):hit.start()]):
                         continue
                     hits.append(value)
@@ -197,16 +203,10 @@ def match_loops(reference: CoreLoop, candidate: CoreLoop, weights: dict[str, flo
                  vector_similarity=vector, common_dimensions=common)
 
 
-def rejection_reason(report: GrindReport) -> str | None:
-    if report.verdict == "RED_FLAG_REJECT":
-        categories = ", ".join(f"{key}={rate:.1%}" for key, rate in report.categories.items() if rate > 0)
-        return f"RED_FLAG_REJECT: GTI={report.gti}; {categories}"
-    if report.verdict == "INSUFFICIENT_DATA" or report.gti is None:
-        return f"INSUFFICIENT_DATA: {report.sample_size} пригодных отзывов; безопасность не подтверждена"
-    risks = [key for key in ("time_gating", "pay_to_skip") if report.categories.get(key, 0) > 0]
-    if report.verdict == "CAUTION" and risks:
-        return "CAUTION: " + ", ".join(f"{key}={report.categories[key]:.1%}" for key in risks)
-    return None
+def rejection_reason(report: GrindReport, policy: SafetyPolicy | None = None) -> str | None:
+    """Reason string when the shared safety gate blocks a report, else None."""
+    decision = safety_gate(report, policy)
+    return None if decision.allowed else decision.reason
 
 
 def store_candidates(html: str, reference: int) -> list[int]:
@@ -281,6 +281,17 @@ class Matcher:
     async def recommend(self, appid: int) -> RecommendationReport:
         reference = await self.pipeline.collect(appid, discover=True)
         sources = list(reference.sources)
+        if not reference.name.strip():
+            raw = list(dict.fromkeys(i for i in reference.candidate_ids if i > 0 and i != appid))
+            reason = "Steam Store не подтвердил название эталона; кандидат не проверялся"
+            return RecommendationReport(
+                reference=appid,
+                raw_candidates=raw,
+                ranked=[],
+                excluded={str(i): reason for i in raw},
+                sources=sources,
+                warnings=[reason],
+            )
         ids = list(reference.candidate_ids)
         if len(set(ids) - {appid}) < self.config.max_candidates:
             extra, status = await self._store_candidates(appid)
@@ -346,5 +357,10 @@ class Matcher:
         ranked.sort(key=lambda item: (-item.match.score, item.grind.gti, item.appid))
         if not ranked:
             warnings.append("Нет кандидатов, прошедших проверку безопасности и покрытия осей.")
-        return RecommendationReport(reference=appid, raw_candidates=raw, ranked=ranked[:self.config.top_k],
+        selected_ranked = ranked[:self.config.top_k]
+        for item in ranked[self.config.top_k:]:
+            excluded[str(item.appid)] = (
+                f"Проверен, но не вошёл в топ-{self.config.top_k}: "
+                f"сходство {item.match.score:.1%}, GTI {item.grind.gti}")
+        return RecommendationReport(reference=appid, raw_candidates=raw, ranked=selected_ranked,
                                     excluded=excluded, sources=sources, warnings=warnings)

@@ -9,10 +9,11 @@ import textwrap
 from pathlib import Path
 
 from .analyzer import Analyzer, AnalyzerConfig
-from .matcher import Matcher, MatcherConfig
+from .matcher import AXES, Matcher, MatcherConfig
 from .models import Assessment, RecommendationReport
 from .network import NetworkConfig, SourceError, Transport
 from .pipeline import Pipeline, PipelineConfig
+from .storage import parse_blacklist, parse_profiles
 
 
 def positive_int(value: str) -> int:
@@ -71,9 +72,19 @@ async def run_recommendation(args: argparse.Namespace) -> RecommendationReport:
         overrides = json.loads(args.blacklist.read_text(encoding="utf-8"))
         if not isinstance(overrides, dict):
             raise ValueError("Blacklist must be a JSON object")
-        options["blacklist"] = {**MatcherConfig().blacklist, **{int(k): v for k, v in overrides.items()}}
+        warnings: list[str] = []
+        merged, _ = parse_blacklist(overrides, MatcherConfig().blacklist, warnings)
+        options["blacklist"] = merged
+        for warning in warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
     if args.profiles:
-        options["profiles"] = json.loads(args.profiles.read_text(encoding="utf-8"))
+        raw_profiles = json.loads(args.profiles.read_text(encoding="utf-8"))
+        if not isinstance(raw_profiles, dict):
+            raise ValueError("Profiles must be a JSON object")
+        profile_warnings: list[str] = []
+        options["profiles"] = parse_profiles(raw_profiles, AXES, profile_warnings)
+        for warning in profile_warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
     matcher_config = MatcherConfig(**options)
     network = NetworkConfig(proxies=args.proxy, timeout=args.timeout, cache_dir=args.cache_dir,
                             cache_ttl=0 if args.no_cache else 3600)
