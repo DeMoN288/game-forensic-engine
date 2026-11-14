@@ -6,6 +6,7 @@ Steam discovery search, and persistent blacklist/profile management.
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -48,6 +49,17 @@ PARTIAL_VECTOR_SIMILARITY = 0.8
 HIGH_SYNERGY_PCT = 70.0
 
 
+def _require_finite(value: float, name: str) -> float:
+    """Return a finite numeric value or raise a clear validation error."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be a finite number")
+    return result
+
+
 def synergy_verdict(
     match: Match,
     report: GrindReport,
@@ -55,6 +67,8 @@ def synergy_verdict(
     min_coverage: float | None = None,
 ) -> str:
     """Synergy label for a candidate, never above the shared safety gate's allowance."""
+    if min_coverage is not None:
+        min_coverage = _require_finite(min_coverage, "min_coverage")
     gate = safety_gate(report, SafetyPolicy(max_gti=MODERATE_SYNERGY_GTI))
     if blocked:
         return "BLACKLISTED"
@@ -293,6 +307,9 @@ async def steam_batch_filter(
         max_grind: Maximum acceptable Grind-To-Infinity (GTI) score (0-100, default 35.0).
         max_completion_hours: Optional max estimated completion time in hours.
     """
+    max_grind = _require_finite(max_grind, "max_grind")
+    if max_completion_hours is not None:
+        max_completion_hours = _require_finite(max_completion_hours, "max_completion_hours")
     items = games[:_MAX_BATCH_GAMES]
     dropped = len(games) - len(items)
     net_config = NetworkConfig(timeout=30)
@@ -300,6 +317,7 @@ async def steam_batch_filter(
         review_pages=1,
         languages=["english", "russian"],
         enable_steampeek=False,
+        enable_steamdb=False,
     )
     analyzer = Analyzer(AnalyzerConfig())
     blacklist, _, load_warnings = user_state()
@@ -356,8 +374,13 @@ async def steam_batch_filter(
                     "reason": decision.reason,
                     "policy_code": decision.code,
                 }
-            except (SourceError, ValueError, TypeError, KeyError, OSError) as e:
-                return {"appid": aid, "name": name, "error": str(e), "passed": False}
+            except Exception as e:
+                return {
+                    "appid": aid,
+                    "title": name,
+                    "error": str(e),
+                    "passed": False,
+                }
 
         results = await asyncio.gather(*(_eval(aid, name) for aid, name in resolved))
 
@@ -530,7 +553,10 @@ async def steam_profile_set(
     """
     if not axes or not set(axes) <= set(AXES):
         raise ValueError(f"Axes must be a non-empty subset of {sorted(AXES)}")
-    cleaned = {axis: float(value) for axis, value in axes.items()}
+    cleaned = {
+        axis: _require_finite(value, f"{axis} profile value")
+        for axis, value in axes.items()
+    }
     if any(not 0.0 <= value <= 1.0 for value in cleaned.values()):
         raise ValueError("Axis values must be between 0.0 and 1.0")
 
