@@ -135,7 +135,11 @@ def patch_mcp_network(sample_game):
                     return game.model_copy(update={"candidate_ids": candidates})
                 return game
 
+        async def fake_fetch_hltb_times(*args, **kwargs):
+            return None
+
         monkeypatch.setattr(mcp_server, "Transport", FakeTransport)
         monkeypatch.setattr(mcp_server, "Pipeline", FakePipeline)
+        monkeypatch.setattr(mcp_server, "fetch_hltb_times", fake_fetch_hltb_times)
 
     return _patch_mcp_network
