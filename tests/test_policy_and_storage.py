@@ -2,7 +2,9 @@
 
 Each test pins a defect that was reproduced before the fix.
 """
+import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -10,45 +12,42 @@ import pytest
 from game_forensic import mcp_server
 from game_forensic.matcher import (
     AXES,
+    COMPILED_CUES,
+    CUES,
     DEFAULT_BLACKLIST,
     Matcher,
     MatcherConfig,
     rejection_reason,
 )
-from game_forensic.models import CoreLoop, Feature, Game, GrindReport, Match, Review
+from game_forensic.models import Game, Match, Review
 from game_forensic.policy import SafetyPolicy, safety_gate
-from game_forensic.storage import load_user_data, parse_blacklist, parse_profiles
-
-
-def _reviews(count: int, text: str = "great game", appid: int = 0) -> list[Review]:
-    return [Review(id=f"{appid}-r{i}", text=text, positive=False, language="english")
-            for i in range(count)]
-
-
-def _report(verdict="NO_RED_FLAG_DETECTED", gti=0.0, sample_size=30, **categories) -> GrindReport:
-    return GrindReport(gti=gti, verdict=verdict, confidence=1.0, sample_size=sample_size,
-                       complaint_count=0, categories=categories, early_cluster={},
-                       evidence=[], warnings=[])
-
+from game_forensic.storage import (
+    load_user_data,
+    parse_blacklist,
+    parse_profiles,
+    remove_blacklist,
+    set_blacklist,
+    set_profile,
+)
 
 # --- policy: one rule set for every consumer -------------------------------------
 
-def test_gated_category_blocks_matches_matcher_and_batch_filter():
+def test_gated_category_blocks_matches_matcher_and_batch_filter(make_report):
     """CAUTION + pay_to_skip must be rejected identically everywhere."""
-    report = _report("CAUTION", 18.08, pay_to_skip=0.2333, repetition=0.1)
+    report = make_report("CAUTION", 18.08, pay_to_skip=0.2333, repetition=0.1)
     decision = safety_gate(report, SafetyPolicy(max_gti=35.0))
     assert decision.allowed is False
     assert decision.code == "GATED_CATEGORY"
     assert rejection_reason(report) == decision.reason
 
 
-def test_caution_without_gated_categories_is_allowed():
-    report = _report("CAUTION", 16.0, repetition=0.2)
+def test_caution_without_gated_categories_is_allowed(make_report):
+    report = make_report("CAUTION", 16.0, repetition=0.2)
     assert safety_gate(report, SafetyPolicy(max_gti=35.0)).allowed is True
 
 
-def test_gate_applies_caller_limits_on_top_of_verdict():
-    clean = _report("NO_RED_FLAG_DETECTED", 50.0)
+def test_gate_applies_caller_limits_on_top_of_verdict(make_report):
+    clean = make_report("NO_RED_FLAG_DETECTED", 50.0)
     assert safety_gate(clean, SafetyPolicy(max_gti=35.0)).code == "OVER_GTI"
     long_game = safety_gate(clean, SafetyPolicy(), completion_hours=120.0)
     assert long_game.allowed is True
@@ -56,10 +55,10 @@ def test_gate_applies_caller_limits_on_top_of_verdict():
     assert limited.code == "OVER_LENGTH"
 
 
-def test_gate_rejects_red_flag_and_insufficient_data():
-    assert safety_gate(_report("RED_FLAG_REJECT", 50.0, repetition=0.6)).code == "RED_FLAG_REJECT"
-    assert safety_gate(_report("INSUFFICIENT_DATA", 0.0, sample_size=3)).code == "INSUFFICIENT_DATA"
-    assert safety_gate(_report(gti=None)).code == "INSUFFICIENT_DATA"
+def test_gate_rejects_red_flag_and_insufficient_data(make_report):
+    assert safety_gate(make_report("RED_FLAG_REJECT", 50.0, repetition=0.6)).code == "RED_FLAG_REJECT"
+    assert safety_gate(make_report("INSUFFICIENT_DATA", 0.0, sample_size=3)).code == "INSUFFICIENT_DATA"
+    assert safety_gate(make_report(gti=None)).code == "INSUFFICIENT_DATA"
 
 
 # --- storage: hand-edited files degrade instead of crashing ----------------------
@@ -106,8 +105,6 @@ def test_corrupt_blacklist_json_is_a_warning(tmp_path: Path):
 
 
 def test_blacklist_remove_cancels_seed_even_after_re_adding(tmp_path: Path):
-    from game_forensic.storage import remove_blacklist, set_blacklist
-
     assert remove_blacklist(tmp_path, 1599340, DEFAULT_BLACKLIST) is False
     assert 1599340 not in load_user_data(AXES, DEFAULT_BLACKLIST, directory=tmp_path).blacklist
 
@@ -123,16 +120,12 @@ def test_blacklist_remove_cancels_seed_even_after_re_adding(tmp_path: Path):
 
 
 def test_blacklist_remove_of_non_seed_deletes_the_key(tmp_path: Path):
-    from game_forensic.storage import remove_blacklist, set_blacklist
-
     set_blacklist(tmp_path, 777, "no upgrades")
     assert remove_blacklist(tmp_path, 777, DEFAULT_BLACKLIST) is False
     assert json.loads((tmp_path / "blacklist.json").read_text(encoding="utf-8")) == {}
 
 
 def test_set_profile_merges_partial_update(tmp_path: Path):
-    from game_forensic.storage import set_profile
-
     set_profile(tmp_path, 100, {"combat_pace": 0.2})
     merged = set_profile(tmp_path, 100, {"narrative_weight": 0.8})
     assert merged == {"combat_pace": 0.2, "narrative_weight": 0.8}
@@ -140,31 +133,12 @@ def test_set_profile_merges_partial_update(tmp_path: Path):
 
 # --- matcher: validated candidates are always accounted for ----------------------
 
-def _loop(confidence: float = 1.0) -> CoreLoop:
-    return CoreLoop(features={a: Feature(value=0.7, confidence=confidence) for a in AXES})
-
-
-class _FakeTransport:
-    async def get(self, url: str, params: dict | None = None) -> str:
-        return '<div id="recommended_block"></div>'
-
-
-class _FakePipeline:
-    def __init__(self, games: dict[int, Game]):
-        self.games = games
-        self.transport = _FakeTransport()
-        self.config = type("C", (), {"source_timeout": 5, "country": "us"})()
-
-    async def collect(self, appid: int, discover: bool = False) -> Game:
-        return self.games[appid]
-
-
-async def test_candidates_beyond_top_k_are_excluded_with_a_reason():
-    games = {1: Game(appid=1, name="Ref", loop=_loop(), candidate_ids=list(range(2, 12)),
-                     reviews=_reviews(30))}
+async def test_candidates_beyond_top_k_are_excluded_with_a_reason(loop, make_reviews, FakePipeline):
+    games = {1: Game(appid=1, name="Ref", loop=loop(), candidate_ids=list(range(2, 12)),
+                     reviews=make_reviews(30, positive=False))}
     for i in range(2, 12):
-        games[i] = Game(appid=i, name=f"G{i}", loop=_loop(), reviews=_reviews(30))
-    report = await Matcher(_FakePipeline(games), config=MatcherConfig(top_k=5)).recommend(1)
+        games[i] = Game(appid=i, name=f"G{i}", loop=loop(), reviews=make_reviews(30, positive=False))
+    report = await Matcher(FakePipeline(games), config=MatcherConfig(top_k=5)).recommend(1)
 
     assert len(report.ranked) == 5
     accounted = {r.appid for r in report.ranked} | set(map(int, report.excluded))
@@ -173,9 +147,9 @@ async def test_candidates_beyond_top_k_are_excluded_with_a_reason():
         assert "топ-5" in report.excluded[str(appid)]
 
 
-async def test_batch_filter_reports_skipped_and_unresolved_counts(monkeypatch, tmp_path: Path):
+async def test_batch_filter_reports_skipped_and_unresolved_counts(monkeypatch, tmp_path: Path, make_reviews):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    good = Game(appid=100, name="Good", reviews=_reviews(25, "great pacing", appid=100))
+    good = Game(appid=100, name="Good", reviews=make_reviews(25, "great pacing", appid=100, positive=False))
 
     class _Transport:
         def __init__(self, config):
@@ -249,36 +223,36 @@ async def test_unsupported_language_request_is_reported(monkeypatch, tmp_path: P
     ("INSUFFICIENT_DATA", 0.0, "INSUFFICIENT_DATA"),
     ("NO_RED_FLAG_DETECTED", 45.0, "DIVERGENT_OR_HIGH_GRIND"),
 ])
-def test_synergy_verdict_respects_gate(verdict, gti, expected):
+def test_synergy_verdict_respects_gate(make_report, verdict, gti, expected):
     match = Match(score=0.9, coverage=1.0, vector_similarity=1.0, common_dimensions=list(AXES))
-    report = _report(verdict, gti, repetition=0.1)
+    report = make_report(verdict, gti, repetition=0.1)
     assert mcp_server.synergy_verdict(match, report) == expected
 
 
-def test_synergy_verdict_blocked_by_gated_category_or_blacklist():
+def test_synergy_verdict_blocked_by_gated_category_or_blacklist(make_report):
     match = Match(score=0.9, coverage=1.0, vector_similarity=1.0, common_dimensions=list(AXES))
-    blocked = _report("CAUTION", 18.0, pay_to_skip=0.3)
+    blocked = make_report("CAUTION", 18.0, pay_to_skip=0.3)
     assert mcp_server.synergy_verdict(match, blocked) == "DIVERGENT_OR_HIGH_GRIND"
-    assert mcp_server.synergy_verdict(match, _report(), blocked=True) == "BLACKLISTED"
+    assert mcp_server.synergy_verdict(match, make_report(), blocked=True) == "BLACKLISTED"
 
 
-def test_synergy_verdict_uses_configured_coverage_floor():
+def test_synergy_verdict_uses_configured_coverage_floor(make_report):
     match = Match(score=0.9, coverage=0.5, vector_similarity=1.0, common_dimensions=list(AXES))
     # 0.5 is above the engine default floor, so the candidate may be recommended.
     assert MatcherConfig().min_coverage == 0.4
-    assert mcp_server.synergy_verdict(match, _report()) == "HIGH_SYNERGY_RECOMMENDED"
+    assert mcp_server.synergy_verdict(match, make_report()) == "HIGH_SYNERGY_RECOMMENDED"
     # A stricter caller-supplied floor must be honoured instead of the default.
-    assert mcp_server.synergy_verdict(match, _report(), min_coverage=0.6) == "INSUFFICIENT_DATA"
+    assert mcp_server.synergy_verdict(match, make_report(), min_coverage=0.6) == "INSUFFICIENT_DATA"
     below_default = Match(score=0.9, coverage=0.3, vector_similarity=1.0,
                           common_dimensions=list(AXES))
-    assert mcp_server.synergy_verdict(below_default, _report()) == "INSUFFICIENT_DATA"
+    assert mcp_server.synergy_verdict(below_default, make_report()) == "INSUFFICIENT_DATA"
 
 
-async def test_analyze_game_surfaces_profile_load_warnings(monkeypatch, tmp_path: Path):
+async def test_analyze_game_surfaces_profile_load_warnings(monkeypatch, tmp_path: Path, make_reviews):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
     (tmp_path / "profiles.json").write_text(json.dumps({"100": {"combat_pace": "fast"}}),
                                             encoding="utf-8")
-    game = Game(appid=100, name="X", reviews=_reviews(25, "great pacing", appid=100))
+    game = Game(appid=100, name="X", reviews=make_reviews(25, "great pacing", appid=100, positive=False))
 
     class _Transport:
         def __init__(self, config):
@@ -325,8 +299,6 @@ def test_blacklist_add_and_remove_round_trip(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(mcp_server, "Transport", _Transport)
 
-    import asyncio
-
     async def scenario():
         added = json.loads(await mcp_server.steam_blacklist_add("Lost Ark", "P2W"))
         assert added["status"] == "added"
@@ -341,10 +313,6 @@ def test_blacklist_add_and_remove_round_trip(monkeypatch, tmp_path: Path):
 
 def test_precompiled_cues_match_previous_inline_patterns():
     """Compiled cue tables must preserve the original word-boundary semantics."""
-    import re
-
-    from game_forensic.matcher import COMPILED_CUES, CUES
-
     assert set(COMPILED_CUES) == set(CUES)
     for axis, poles in CUES.items():
         assert len(COMPILED_CUES[axis]) == len(poles)

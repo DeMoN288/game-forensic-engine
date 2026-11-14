@@ -1,9 +1,9 @@
 import json
 
 import pytest
-from test_matcher import FakePipeline, game
 
 from game_forensic import cli
+from game_forensic.analyzer import Analyzer
 from game_forensic.matcher import Matcher
 from game_forensic.models import RecommendationReport
 
@@ -29,9 +29,7 @@ def test_recommend_json_file_and_exit_code(monkeypatch, tmp_path):
     assert json.loads(output.read_text(encoding="utf-8"))["reference"] == 1
 
 
-def test_legacy_analyze_command(monkeypatch, capsys):
-    from game_forensic.analyzer import Analyzer
-
+def test_legacy_analyze_command(monkeypatch, capsys, game):
     async def run(args):
         assert args.command == "analyze"
         return Analyzer().assess(game(args.appid))
@@ -42,7 +40,7 @@ def test_legacy_analyze_command(monkeypatch, capsys):
     assert cli.main(["analyze", "1"]) == 0
 
 
-async def test_table_has_required_columns_and_reasons():
+async def test_table_has_required_columns_and_reasons(game, FakePipeline):
     report = await Matcher(FakePipeline({1: game(1, candidates=[2]), 2: game(2)})).recommend(1)
     text = cli.render_recommendations(report)
     for column in ["Название", "Сходство %", "GTI балл", "Почему подходит", "Предупреждения"]:

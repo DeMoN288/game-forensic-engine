@@ -9,19 +9,6 @@ from game_forensic.matcher import estimate_completion_hours, extract_loop, match
 from game_forensic.models import Game, Review
 
 
-def _make_reviews(count: int, text: str = "Fun game!", minutes: int = 120) -> list[Review]:
-    return [
-        Review(
-            id=f"r{i}",
-            text=text,
-            language="english",
-            positive=True,
-            minutes_at_review=minutes,
-        )
-        for i in range(count)
-    ]
-
-
 def test_negation_window_handles_multiword_adjectives():
     analyzer = Analyzer()
     review = Review(
@@ -33,25 +20,25 @@ def test_negation_window_handles_multiword_adjectives():
     assert analyzer.find_patterns(review) == []
 
 
-def test_shallow_progression_warning_detected():
-    reviews = _make_reviews(20, "Fun concept but no upgrades and nothing to unlock.")
+def test_shallow_progression_warning_detected(make_reviews):
+    reviews = make_reviews(20, "Fun concept but no upgrades and nothing to unlock.")
     game = Game(appid=1, name="Shallow", reviews=reviews)
     report = Analyzer().analyze(game)
     assert any("Shallow progression" in w for w in report.warnings)
 
 
-def test_extract_loop_supports_cozy_incremental_cues():
+def test_extract_loop_supports_cozy_incremental_cues(make_reviews):
     hammer = Game(
         appid=5229450,
         name="Hammer these nails!",
         description="Cozy, relaxing physics-based game with upgrades and abilities. No stress, no timers.",
-        reviews=_make_reviews(5, "Oddly satisfying hammering and fun upgrades!"),
+        reviews=make_reviews(5, "Oddly satisfying hammering and fun upgrades!"),
     )
     dismantle = Game(
         appid=4043010,
         name="Just Dismantle",
         description="Relaxing dismantling with upgrades and very satisfying physics.",
-        reviews=_make_reviews(5, "Cozy, no timers, satisfying upgrades."),
+        reviews=make_reviews(5, "Cozy, no timers, satisfying upgrades."),
     )
     loop_a = extract_loop(hammer)
     loop_b = extract_loop(dismantle)
@@ -73,7 +60,8 @@ def test_estimate_completion_hours_median():
 
 
 @pytest.mark.asyncio
-async def test_mcp_batch_filter_rejects_insufficient_data_and_blacklisted(monkeypatch, tmp_path: Path):
+async def test_mcp_batch_filter_rejects_insufficient_data_and_blacklisted(monkeypatch, tmp_path: Path,
+                                                                         make_reviews):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
     (tmp_path / "blacklist.json").write_text(json.dumps({"999": "No upgrades"}), encoding="utf-8")
 
@@ -87,7 +75,7 @@ async def test_mcp_batch_filter_rejects_insufficient_data_and_blacklisted(monkey
             return Game(
                 appid=200,
                 name="Good Short Game",
-                reviews=_make_reviews(25, "Completed in one sitting, great game!", minutes=120),
+                reviews=make_reviews(25, "Completed in one sitting, great game!", minutes=120),
             )
 
     monkeypatch.setattr(mcp_server, "Pipeline", FakePipeline)
@@ -139,7 +127,7 @@ async def test_mcp_blacklist_add_and_search_games(monkeypatch, tmp_path: Path):
     assert saved["222"] == "No upgrades"
 
 
-def test_extract_loop_uses_steam_category_metadata_fallback():
+def test_extract_loop_uses_steam_category_metadata_fallback(make_reviews):
     game = Game(
         appid=777,
         name="Chill Toy",
@@ -151,7 +139,7 @@ def test_extract_loop_uses_steam_category_metadata_fallback():
                 {"description": "Save Anytime"},
             ]
         },
-        reviews=_make_reviews(5, "Fun upgrades!"),
+        reviews=make_reviews(5, "Fun upgrades!"),
     )
     loop = extract_loop(game)
     assert loop.features["combat_pace"].value == 0.15

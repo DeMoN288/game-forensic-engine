@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 from pydantic import ValidationError
 
@@ -13,34 +11,18 @@ from game_forensic.matcher import (
     rejection_reason,
     store_candidates,
 )
-from game_forensic.models import CoreLoop, Feature, Game, GrindReport, Review
-from game_forensic.network import SourceError
+from game_forensic.models import CoreLoop, Game
 from game_forensic.parser import Parser
 from game_forensic.pipeline import Pipeline, PipelineConfig
 
 
-def loop(value=0.7, confidence=1, axes=AXES):
-    return CoreLoop(features={axis: Feature(value=value, confidence=confidence) for axis in axes})
-
-
-def grind(verdict="NO_RED_FLAG_DETECTED", gti=0, **categories):
-    return GrindReport(gti=gti, verdict=verdict, confidence=1, sample_size=30, complaint_count=0,
-                       categories=categories, early_cluster={}, evidence=[], warnings=[])
-
-
-def game(appid, text="great game", candidates=(), features=True):
-    return Game(appid=appid, name=f"Game {appid}", candidate_ids=list(candidates),
-                loop=loop() if features else CoreLoop(),
-                reviews=[Review(id=str(i), text=text, positive=False) for i in range(30)])
-
-
-def test_identical_opposite_and_symmetric_vectors():
+def test_identical_opposite_and_symmetric_vectors(loop):
     assert match_loops(loop(), loop()).score == 1
     assert match_loops(loop(0), loop(1)).score == 0
     assert match_loops(loop(0.1), loop(0.8)) == match_loops(loop(0.8), loop(0.1))
 
 
-def test_unknown_dimensions_and_confidence_penalize_score():
+def test_unknown_dimensions_and_confidence_penalize_score(loop):
     partial = match_loops(loop(), loop(axes=AXES[:2]))
     assert partial.coverage == 0.4
     assert partial.score == 0.4
@@ -50,7 +32,7 @@ def test_unknown_dimensions_and_confidence_penalize_score():
     assert match_loops(CoreLoop(), CoreLoop()).score == 0
 
 
-def test_weighted_distance():
+def test_weighted_distance(loop):
     weights = dict.fromkeys(AXES, 1.0)
     weights[AXES[0]] = 6
     candidate = loop(0)
@@ -108,16 +90,16 @@ def test_conflicting_evidence_reduces_confidence():
     assert mixed.features["tactile_feedback"].confidence < strong.features["tactile_feedback"].confidence
 
 
-@pytest.mark.parametrize("report,rejected", [
-    (grind("RED_FLAG_REJECT", 50, repetition=0.6), True),
-    (grind("CAUTION", 16, time_gating=0.1), True),
-    (grind("CAUTION", 16, pay_to_skip=0.1), True),
-    (grind("CAUTION", 16, repetition=0.2), False),
-    (grind("INSUFFICIENT_DATA", 0), True),
-    (grind(gti=None), True), (grind(), False),
+@pytest.mark.parametrize("options,rejected", [
+    ({"verdict": "RED_FLAG_REJECT", "gti": 50, "repetition": 0.6}, True),
+    ({"verdict": "CAUTION", "gti": 16, "time_gating": 0.1}, True),
+    ({"verdict": "CAUTION", "gti": 16, "pay_to_skip": 0.1}, True),
+    ({"verdict": "CAUTION", "gti": 16, "repetition": 0.2}, False),
+    ({"verdict": "INSUFFICIENT_DATA", "gti": 0}, True),
+    ({"gti": None}, True), ({}, False),
 ])
-def test_safety_policy(report, rejected):
-    assert bool(rejection_reason(report)) is rejected
+def test_safety_policy(make_report, options, rejected):
+    assert bool(rejection_reason(make_report(**options))) is rejected
 
 
 def test_store_parser_scope_and_deduplication():
@@ -138,38 +120,7 @@ def test_existing_peek_parser():
     assert Parser().peek(html, 1) == [2, 3]
 
 
-class FakeTransport:
-    def __init__(self, html="", fail=False):
-        self.html, self.fail = html, fail
-
-    async def get(self, url, params=None):
-        if self.fail:
-            raise SourceError("offline")
-        return self.html
-
-
-class FakePipeline:
-    def __init__(self, games, transport=None, errors=(), delay=0):
-        self.games, self.transport = games, transport or FakeTransport()
-        self.errors, self.delay = set(errors), delay
-        self.config = PipelineConfig()
-        self.calls, self.active, self.peak = [], 0, 0
-
-    async def collect(self, appid, discover=False):
-        self.calls.append((appid, discover))
-        self.active += 1
-        self.peak = max(self.peak, self.active)
-        try:
-            if self.delay:
-                await asyncio.sleep(self.delay)
-            if appid in self.errors:
-                raise SourceError("offline")
-            return self.games[appid].model_copy(deep=True)
-        finally:
-            self.active -= 1
-
-
-async def test_batch_blacklist_safety_failure_top_five():
+async def test_batch_blacklist_safety_failure_top_five(game, FakePipeline):
     ids = list(range(2, 13)) + [2, 1]
     games = {i: game(i) for i in range(1, 13)}
     games[1].candidate_ids = ids
@@ -189,7 +140,7 @@ async def test_batch_blacklist_safety_failure_top_five():
     assert report.raw_candidates == list(range(2, 13))
 
 
-async def test_caution_timegate_rejected_even_when_evidence_disabled():
+async def test_caution_timegate_rejected_even_when_evidence_disabled(game, FakePipeline):
     games = {1: game(1, candidates=[2]), 2: game(2)}
     # Seven out of thirty complaints: CAUTION with P2W, below RED_FLAG threshold.
     for review in games[2].reviews[:7]:
@@ -201,7 +152,7 @@ async def test_caution_timegate_rejected_even_when_evidence_disabled():
     assert "pay_to_skip" in report.excluded["2"]
 
 
-async def test_non_p2w_caution_retained_with_warning():
+async def test_non_p2w_caution_retained_with_warning(game, FakePipeline):
     games = {1: game(1, candidates=[2]), 2: game(2)}
     for review in games[2].reviews[:7]:
         review.text = "forced grind"
@@ -210,7 +161,7 @@ async def test_non_p2w_caution_retained_with_warning():
     assert report.ranked[0].warnings[0].startswith("CAUTION")
 
 
-async def test_store_fallback_candidate_limit_and_blacklist_before_limit():
+async def test_store_fallback_candidate_limit_and_blacklist_before_limit(game, FakePipeline, FakeTransport):
     transport = FakeTransport('<div id="recommended_block"><a data-ds-appid="3"></a>'
                               '<a data-ds-appid="4"></a><a data-ds-appid="5"></a></div>')
     pipeline = FakePipeline({i: game(i) for i in range(1, 6)}, transport)
@@ -223,14 +174,14 @@ async def test_store_fallback_candidate_limit_and_blacklist_before_limit():
     assert report.sources[-1].source == "steam_store_similar"
 
 
-async def test_discovery_failure_and_no_matches_are_explained():
+async def test_discovery_failure_and_no_matches_are_explained(game, FakePipeline, FakeTransport):
     report = await Matcher(FakePipeline({1: game(1)}, FakeTransport(fail=True))).recommend(1)
     assert report.ranked == []
     assert report.sources[-1].status == "unavailable"
     assert any("Нет кандидатов" in warning for warning in report.warnings)
 
 
-async def test_reference_and_candidate_missing_features():
+async def test_reference_and_candidate_missing_features(game, FakePipeline, loop):
     pipeline = FakePipeline({1: game(1, candidates=[2], features=False), 2: game(2)})
     report = await Matcher(pipeline).recommend(1)
     assert "эталона" in report.excluded["2"]
@@ -241,7 +192,7 @@ async def test_reference_and_candidate_missing_features():
     assert "покрытие" in report.excluded["2"]
 
 
-async def test_candidate_timeout_is_isolated():
+async def test_candidate_timeout_is_isolated(game, FakePipeline):
     pipeline = FakePipeline({1: game(1, candidates=[2, 3]), 2: game(2), 3: game(3)}, delay=0.02)
     report = await Matcher(pipeline, config=MatcherConfig(candidate_timeout=0.001)).recommend(1)
     assert "TimeoutError" in report.excluded["2"]
@@ -277,7 +228,7 @@ async def test_full_pipeline_with_fixture_transport():
     assert 0 < report.ranked[0].match.score < 1
 
 
-async def test_store_search_fallback_when_discovery_empty():
+async def test_store_search_fallback_when_discovery_empty(game, FakePipeline, FakeTransport):
     class SearchTransport(FakeTransport):
         async def json(self, url, params):
             if "storesearch" in url:

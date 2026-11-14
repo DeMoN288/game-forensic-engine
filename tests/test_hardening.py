@@ -5,9 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from test_matcher import FakePipeline, game
-from test_mcp import _patch_mcp_network, _sample_game
-from test_policy_and_storage import _report
 
 from game_forensic import cli, mcp_server, storage
 from game_forensic.matcher import Matcher
@@ -48,7 +45,7 @@ async def test_cli_blacklist_warnings_go_to_stderr(monkeypatch, tmp_path, capsys
     assert "200" in errors
 
 
-async def test_matcher_rejects_unverified_reference_before_candidate_collection():
+async def test_matcher_rejects_unverified_reference_before_candidate_collection(game, FakePipeline):
     reference = game(1, candidates=[2])
     reference.name = ""
     pipeline = FakePipeline({1: reference, 2: game(2)})
@@ -60,9 +57,9 @@ async def test_matcher_rejects_unverified_reference_before_candidate_collection(
     assert (2, False) not in pipeline.calls
 
 
-async def test_batch_filter_rejects_unverified_game_with_enough_reviews(monkeypatch, tmp_path):
+async def test_batch_filter_rejects_unverified_game_with_enough_reviews(monkeypatch, tmp_path, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    unverified = _sample_game(100, "", "Cozy upgrades", "Great game")
+    unverified = sample_game(100, "", "Cozy upgrades", "Great game")
 
     class _Transport:
         def __init__(self, config):
@@ -94,13 +91,14 @@ async def test_batch_filter_rejects_unverified_game_with_enough_reviews(monkeypa
 
 
 @pytest.mark.parametrize("unverified_appid", [100, 200])
-async def test_match_backlog_never_recommends_unverified_game(monkeypatch, tmp_path, unverified_appid):
+async def test_match_backlog_never_recommends_unverified_game(monkeypatch, tmp_path, unverified_appid,
+                                                              patch_mcp_network, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
     description = "Relaxing game with upgrades, responsive controls, no timers, story-rich."
     reviews = "Oddly satisfying progression, great upgrades, no timers, story-rich."
-    _patch_mcp_network(monkeypatch, {
-        100: _sample_game(100, "" if unverified_appid == 100 else "Reference", description, reviews),
-        200: _sample_game(200, "" if unverified_appid == 200 else "Candidate", description, reviews),
+    patch_mcp_network(monkeypatch, {
+        100: sample_game(100, "" if unverified_appid == 100 else "Reference", description, reviews),
+        200: sample_game(200, "" if unverified_appid == 200 else "Candidate", description, reviews),
     })
 
     result = json.loads(await mcp_server.steam_match_backlog(100, 200))
@@ -126,16 +124,16 @@ async def test_invalid_appid_does_not_create_blacklist(monkeypatch, tmp_path):
     assert not (tmp_path / "blacklist.json").exists()
 
 
-def test_length_limit_rejects_unknown_estimate():
-    decision = safety_gate(_report(), SafetyPolicy(max_completion_hours=10), completion_hours=None)
+def test_length_limit_rejects_unknown_estimate(make_report):
+    decision = safety_gate(make_report(), SafetyPolicy(max_completion_hours=10), completion_hours=None)
     assert decision.allowed is False
     assert decision.code == "LENGTH_UNKNOWN"
-    assert safety_gate(_report(), SafetyPolicy(), completion_hours=None).allowed is True
+    assert safety_gate(make_report(), SafetyPolicy(), completion_hours=None).allowed is True
 
 
-async def test_batch_filter_enforces_unknown_length_limit(monkeypatch, tmp_path):
+async def test_batch_filter_enforces_unknown_length_limit(monkeypatch, tmp_path, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    good = _sample_game(100, "Good", "Cozy upgrades", "Great game")
+    good = sample_game(100, "Good", "Cozy upgrades", "Great game")
 
     class _Transport:
         def __init__(self, config):

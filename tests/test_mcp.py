@@ -4,63 +4,17 @@ from pathlib import Path
 import pytest
 
 from game_forensic import mcp_server
-from game_forensic.models import Game, Review
-
-
-def _sample_game(appid: int, name: str, description: str, review_text: str) -> Game:
-    reviews = [
-        Review(
-            id=f"{appid}-r{i}",
-            text=review_text,
-            language="english",
-            positive=True,
-            minutes_at_review=120,
-        )
-        for i in range(25)
-    ]
-    return Game(appid=appid, name=name, description=description, reviews=reviews)
-
-
-def _patch_mcp_network(monkeypatch: pytest.MonkeyPatch, games: dict[int, Game]) -> None:
-    class FakeTransport:
-        def __init__(self, config):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def json(self, url: str, params: dict):
-            return {"items": [{"id": 105600, "name": "Terraria"}]}
-
-        async def get(self, url: str, params: dict | None = None) -> str:
-            return ""
-
-    class FakePipeline:
-        def __init__(self, transport, config):
-            self.transport = transport
-            self.config = config
-
-        async def collect(self, appid: int, discover: bool = False) -> Game:
-            game = games[appid]
-            if discover:
-                candidates = [gid for gid in games if gid != appid]
-                return game.model_copy(update={"candidate_ids": candidates})
-            return game
-
-    monkeypatch.setattr(mcp_server, "Transport", FakeTransport)
-    monkeypatch.setattr(mcp_server, "Pipeline", FakePipeline)
+from game_forensic.models import Game
 
 
 @pytest.mark.asyncio
-async def test_mcp_steam_analyze_game(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+async def test_mcp_steam_analyze_game(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                      patch_mcp_network, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    _patch_mcp_network(
+    patch_mcp_network(
         monkeypatch,
         {
-            105600: _sample_game(
+            105600: sample_game(
                 105600,
                 "Terraria",
                 "Cozy, relaxing sandbox with skill trees and upgrades. No timers.",
@@ -77,12 +31,13 @@ async def test_mcp_steam_analyze_game(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_mcp_steam_match_backlog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+async def test_mcp_steam_match_backlog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                       patch_mcp_network, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    _patch_mcp_network(
+    patch_mcp_network(
         monkeypatch,
         {
-            105600: _sample_game(
+            105600: sample_game(
                 105600,
                 "Terraria",
                 "Relaxing sandbox with upgrades, responsive controls, no timers, story-rich.",
@@ -98,12 +53,13 @@ async def test_mcp_steam_match_backlog(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_mcp_steam_batch_filter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+async def test_mcp_steam_batch_filter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                      patch_mcp_network, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    _patch_mcp_network(
+    patch_mcp_network(
         monkeypatch,
         {
-            105600: _sample_game(
+            105600: sample_game(
                 105600,
                 "Terraria",
                 "Sandbox with upgrades and abilities.",
@@ -118,18 +74,19 @@ async def test_mcp_steam_batch_filter(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_mcp_steam_recommend_and_profile_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+async def test_mcp_steam_recommend_and_profile_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                   patch_mcp_network, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    _patch_mcp_network(
+    patch_mcp_network(
         monkeypatch,
         {
-            100: _sample_game(
+            100: sample_game(
                 100,
                 "Ref Game",
                 "Relaxing game with upgrades, responsive controls, no timers, story-rich.",
                 "Oddly satisfying loop and great upgrades.",
             ),
-            200: _sample_game(
+            200: sample_game(
                 200,
                 "Candidate Game",
                 "Relaxing game with upgrades, responsive controls, no timers, story-rich.",
@@ -152,18 +109,19 @@ async def test_mcp_steam_recommend_and_profile_set(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_mcp_steam_match_backlog_partial_high_synergy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+async def test_mcp_steam_match_backlog_partial_high_synergy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                            patch_mcp_network, sample_game):
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
-    _patch_mcp_network(
+    patch_mcp_network(
         monkeypatch,
         {
-            100: _sample_game(
+            100: sample_game(
                 100,
                 "Ref Game",
                 "Relaxing game with upgrades, responsive controls.",
                 "Oddly satisfying loop and great upgrades.",
             ),
-            200: _sample_game(
+            200: sample_game(
                 200,
                 "Candidate Game",
                 "Relaxing game with upgrades, responsive controls.",
