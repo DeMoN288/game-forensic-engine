@@ -76,6 +76,53 @@ async def test_transport_recovers_from_corrupt_cache(monkeypatch, tmp_path):
     assert json.loads(cache_path.read_text(encoding="utf-8"))["body"] == "fresh"
 
 
+@pytest.mark.parametrize("payload", ["[]", '"just text"', "null", "123", "true"])
+async def test_transport_recovers_from_non_object_cache(monkeypatch, tmp_path, payload):
+    """Valid JSON that is not an object must not crash the request with TypeError."""
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text="fresh")
+
+    _mock_async_client(monkeypatch, handler)
+    config = NetworkConfig(attempts=1, host_interval=0, cache_dir=tmp_path)
+    transport = Transport(config)
+    cache_path = transport._cache_path("https://example.test/data", None)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(payload, encoding="utf-8")
+
+    async with transport:
+        assert await transport.get("https://example.test/data") == "fresh"
+
+    assert calls == 1
+    assert json.loads(cache_path.read_text(encoding="utf-8"))["body"] == "fresh"
+
+
+async def test_transport_ignores_cache_with_non_string_body(monkeypatch, tmp_path):
+    """A cache entry whose body is not a string must fall through to the network."""
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text="fresh")
+
+    _mock_async_client(monkeypatch, handler)
+    config = NetworkConfig(attempts=1, host_interval=0, cache_dir=tmp_path)
+    transport = Transport(config)
+    cache_path = transport._cache_path("https://example.test/data", None)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps({"time": __import__("time").time(), "body": ["not", "text"]}),
+                          encoding="utf-8")
+
+    async with transport:
+        assert await transport.get("https://example.test/data") == "fresh"
+
+    assert calls == 1
+
+
 async def test_transport_rejects_oversized_body(monkeypatch, tmp_path):
     def handler(request):
         return httpx.Response(200, content=b"too large")
