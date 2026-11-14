@@ -27,6 +27,7 @@ from .models import GrindReport, Match
 from .network import NetworkConfig, SourceError, Transport
 from .pipeline import Pipeline, PipelineConfig
 from .policy import SafetyPolicy, safety_gate
+from .steam import search_by_tag
 from .storage import (
     data_dir,
     dump_json,
@@ -584,6 +585,23 @@ async def steam_search_games(
             break
 
     return dump_json({"query": query, "count": len(items), "items": items})
+
+
+@mcp.tool()
+async def steam_search_by_tag(tag: str | int, limit: int = 10) -> str:
+    """Discover Steam games by a catalog tag (not a title keyword).
+
+    Returns Steam-confirmed app IDs, names and Store URLs. This is discovery only;
+    use steam_analyze_game or steam_batch_filter to evaluate grind and safety.
+
+    Args:
+        tag: English Steam tag name/slug (e.g. "Roguelike", "story-rich")
+            or positive numeric tag ID (e.g. 1664 for Puzzle).
+        limit: Maximum number of results to return (1-25, default 10).
+    """
+    async with Transport(NetworkConfig(timeout=20)) as transport:
+        result = await search_by_tag(transport, tag, limit)
+    return dump_json(result)
 
 
 @mcp.tool()
