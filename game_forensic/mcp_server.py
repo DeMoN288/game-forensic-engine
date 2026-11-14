@@ -13,6 +13,7 @@ from mcp.server.mcpserver import MCPServer
 
 from .analyzer import SUPPORTED_LANGUAGES, Analyzer, AnalyzerConfig
 from .hltb import fetch_hltb_times
+from .itch import analyze_itch_game, search_itch_games
 from .matcher import (
     AXES,
     DEFAULT_BLACKLIST,
@@ -671,6 +672,97 @@ async def steam_profile_set(
             "axes": merged,
         }
     )
+
+
+@mcp.tool()
+async def itch_search_by_tag(
+    tag: str = "incremental",
+    sort: str = "popular",
+    max_hours: float | None = 3.0,
+    browser_only: bool | None = False,
+    free_only: bool = False,
+    limit: int = 10,
+) -> str:
+    """Search itch.io games by tag, analyze top candidates for grind/duration, and rank them.
+
+    Args:
+        tag: itch.io tag slug (e.g. "incremental", "idle", "roguelike").
+        sort: Catalog sort order ("popular", "new-and-popular", "top-sellers", "top-rated", "newest").
+        max_hours: Optional maximum estimated playtime in hours; games exceeding this are filtered out.
+        browser_only: If False, only downloadable games; if True, only browser-only; if None, all.
+        free_only: If True, keep only free games.
+        limit: Maximum number of ranked results to return (default 10).
+    """
+    if max_hours is not None:
+        max_hours = _require_finite(max_hours, "max_hours")
+
+    safe_limit = max(limit, 1)
+    candidate_cap = min(safe_limit * 2, 16)
+
+    cards = await search_itch_games(
+        tag=tag,
+        sort=sort,
+        browser_only=browser_only,
+        free_only=free_only,
+    )
+    top_cards = cards[:candidate_cap]
+    analyzed_list = await asyncio.gather(
+        *(analyze_itch_game(card.url, title=card.title) for card in top_cards)
+    )
+
+    items: list[dict[str, Any]] = []
+    for card, analyzed in zip(top_cards, analyzed_list, strict=True):
+        if (
+            max_hours is not None
+            and analyzed.estimated_hours is not None
+            and analyzed.estimated_hours > max_hours
+        ):
+            continue
+        items.append(
+            {
+                "title": analyzed.title or card.title,
+                "url": card.url,
+                "author": card.author,
+                "genre": card.genre,
+                "price": card.price,
+                "platforms": card.platforms,
+                "is_downloadable": card.is_downloadable,
+                "is_browser": card.is_browser,
+                "gti_score": analyzed.gti_score,
+                "verdict": analyzed.verdict,
+                "estimated_hours": analyzed.estimated_hours,
+                "duration_source": analyzed.duration_source,
+                "comments_count": analyzed.comments_count,
+                "warnings": analyzed.warnings,
+            }
+        )
+
+    items.sort(key=lambda item: (item["estimated_hours"] is None, item["gti_score"]))
+    items = items[:safe_limit]
+
+    return dump_json(
+        {
+            "tag": tag,
+            "sort": sort,
+            "max_hours": max_hours,
+            "count": len(items),
+            "items": items,
+        }
+    )
+
+
+@mcp.tool()
+async def itch_analyze_game(url: str) -> str:
+    """Analyze a specific itch.io game page for anti-grind GTI and estimated playtime.
+
+    Args:
+        url: Full itch.io game page URL.
+    """
+    clean_url = url.strip()
+    if not clean_url:
+        raise ValueError("URL must not be empty")
+    result = await analyze_itch_game(clean_url)
+    return dump_json(result.as_dict())
 
 
 def main() -> None:
