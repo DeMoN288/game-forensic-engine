@@ -29,10 +29,12 @@ from .network import NetworkConfig, SourceError, Transport
 from .pipeline import Pipeline, PipelineConfig
 from .policy import SafetyPolicy, safety_gate
 from .presets import get_preset, score_candidate_with_preset
+from .pricing import fetch_steam_price
 from .steam import search_by_tag
 from .storage import (
     data_dir,
     dump_json,
+    load_played_appids,
     load_user_data,
     remove_blacklist,
     set_blacklist,
@@ -753,6 +755,9 @@ async def recommend_by_preset(
     source: str = "both",
     max_hours: float = 3.0,
     limit: int = 5,
+    exclude_played: bool = True,
+    max_price_usd: float | None = None,
+    on_sale_only: bool = False,
 ) -> str:
     """Rank Steam and/or itch.io games against a curated mechanic preset.
 
@@ -767,6 +772,9 @@ async def recommend_by_preset(
         source: "steam", "itch" or "both" (default).
         max_hours: Hard ceiling on known completion hours (default 3.0).
         limit: Maximum number of ranked results to return (1-25, default 5).
+        exclude_played: Exclude AppIDs in my_steam_games.json.
+        max_price_usd: Optional nonnegative US dollar price ceiling.
+        on_sale_only: Require a confirmed store discount.
     """
     preset_obj = get_preset(preset)
     source = source.strip().casefold()
@@ -775,10 +783,15 @@ async def recommend_by_preset(
     max_hours = _require_finite(max_hours, "max_hours")
     if max_hours <= 0:
         raise ValueError("max_hours must be positive")
+    if max_price_usd is not None:
+        max_price_usd = _require_finite(max_price_usd, "max_price_usd")
+        if max_price_usd < 0:
+            raise ValueError("max_price_usd must be nonnegative")
     safe_limit = min(max(limit, 1), 25)
     per_source_cap = max(safe_limit, 3)
     candidate_cap = per_source_cap if source == "both" else min(safe_limit * 2, 16)
     blacklist, profiles, load_warnings = user_state()
+    played = load_played_appids(warnings=load_warnings) if exclude_played else set()
     penalties = load_rejection_penalties()
 
     steam_items: list[dict[str, Any]] = []
@@ -810,6 +823,8 @@ async def recommend_by_preset(
                             continue
                         steam_items.append(item)
             if source == "both":
+                excluded.extend({"appid": item["appid"], "name": item.get("name", ""),
+                                 "reason": "CANDIDATE_LIMIT"} for item in steam_items[candidate_cap:])
                 steam_items = steam_items[:candidate_cap]
         if source in {"both", "itch"}:
             cards = await search_itch_games(tag=preset_obj.itch_tag, sort="popular")
@@ -832,6 +847,8 @@ async def recommend_by_preset(
             if appid in blacklist:
                 return {"appid": appid, "name": name, "source": "steam",
                         "excluded": f"BLACKLIST: {blacklist[appid]}"}
+            if appid in played:
+                return {"appid": appid, "name": name, "source": "steam", "excluded": "ALREADY_PLAYED"}
             try:
                 gdata = await pipeline.collect(appid, discover=False)
                 if not gdata.name.strip():
@@ -840,11 +857,19 @@ async def recommend_by_preset(
                 grind = await asyncio.to_thread(analyzer.analyze, gdata)
                 loop = extract_loop(gdata, profiles.get(appid))
                 hltb = await fetch_hltb_times(gdata.name, appid=appid)
+                price = (
+                    await fetch_steam_price(appid=appid)
+                    if max_price_usd is not None or on_sale_only else None
+                )
                 hours = (
                     hltb.main_hours
                     if hltb and hltb.main_hours is not None
                     else estimate_completion_hours(gdata)
                 )
+                decision = safety_gate(grind, SafetyPolicy(max_completion_hours=max_hours), hours)
+                if not decision.allowed:
+                    return {"appid": appid, "name": gdata.name, "source": "steam",
+                            "excluded": decision.code}
                 return {
                     "appid": appid,
                     "name": gdata.name,
@@ -857,6 +882,7 @@ async def recommend_by_preset(
                         if hltb and hltb.main_hours is not None
                         else "steam_reviews_estimate"
                     ),
+                    "price_info": price,
                 }
             except (SourceError, TimeoutError, OSError, ValueError, TypeError, KeyError) as exc:
                 return {"appid": appid, "name": name, "source": "steam",
@@ -868,6 +894,16 @@ async def recommend_by_preset(
             except (SourceError, OSError, ValueError, TypeError, KeyError) as exc:
                 return {"name": card.title, "source": "itch",
                         "excluded": f"Ошибка проверки: {type(exc).__name__}"}
+            report = GrindReport(
+                verdict=analyzed.verdict, gti=analyzed.gti_score, confidence=0,
+                sample_size=analyzed.comments_count, complaint_count=0,
+                categories=analyzed.categories, early_cluster={}, evidence=[], warnings=analyzed.warnings,
+            )
+            decision = safety_gate(
+                report, SafetyPolicy(max_completion_hours=max_hours), analyzed.estimated_hours
+            )
+            if not decision.allowed:
+                return {"name": analyzed.title or card.title, "source": "itch", "excluded": decision.code}
             return {
                 "name": analyzed.title or card.title,
                 "source": "itch",
@@ -881,6 +917,7 @@ async def recommend_by_preset(
                 "loop": analyzed.loop,
                 "hours": analyzed.estimated_hours,
                 "completion_source": analyzed.duration_source,
+                "price_info": None,
                 "comments_count": analyzed.comments_count,
             }
 
@@ -902,6 +939,26 @@ async def recommend_by_preset(
             )
             continue
         hours = result.get("hours")
+        price_info = result.get("price_info")
+        if result["source"] == "itch":
+            price_text = str(result.get("price", "Free")).strip().lower()
+            try:
+                parsed_price = 0.0 if price_text == "free" else float(price_text.replace("$", ""))
+                price_info = {"sale_price": parsed_price, "normal_price": parsed_price,
+                              "is_on_sale": False}
+            except ValueError:
+                price_info = None
+        if (max_price_usd is not None or on_sale_only) and (
+            price_info is None or not math.isfinite(price_info["sale_price"]) or price_info["sale_price"] < 0
+        ):
+            excluded.append({"appid": result.get("appid"), "name": result["name"], "reason": "PRICE_UNKNOWN"})
+            continue
+        if max_price_usd is not None and price_info is not None and price_info["sale_price"] > max_price_usd:
+            excluded.append({"appid": result.get("appid"), "name": result["name"], "reason": "OVER_PRICE"})
+            continue
+        if on_sale_only and price_info is not None and not price_info["is_on_sale"]:
+            excluded.append({"appid": result.get("appid"), "name": result["name"], "reason": "NOT_ON_SALE"})
+            continue
         if hours is not None and hours > max_hours:
             excluded.append(
                 {"appid": result.get("appid"), "name": result["name"],
@@ -920,6 +977,7 @@ async def recommend_by_preset(
             "gti_score": result["gti"],
             "estimated_completion_hours": hours,
             "completion_source": result["completion_source"],
+            "price_info": price_info,
         }
         if result["source"] == "itch":
             item.update(
@@ -938,6 +996,8 @@ async def recommend_by_preset(
             str(it["name"]),
         )
     )
+    excluded.extend({"appid": item.get("appid"), "name": item["name"], "reason": "RESULT_LIMIT"}
+                    for item in scored[safe_limit:])
     scored = scored[:safe_limit]
 
     return dump_json(

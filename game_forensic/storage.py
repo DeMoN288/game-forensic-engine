@@ -27,6 +27,34 @@ def data_dir() -> Path:
     return Path(custom) if custom else Path.home() / ".game-forensic"
 
 
+def load_played_appids(path: Path | None = None, warnings: list[str] | None = None) -> set[int]:
+    """Load played Steam AppIDs from the working directory or persistent data dir."""
+    candidates = ([path] if path is not None else
+                  [Path.cwd() / "my_steam_games.json", data_dir() / "my_steam_games.json"])
+    warnings = warnings if warnings is not None else []
+    for candidate in candidates:
+        try:
+            raw = json.loads(candidate.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            warnings.append(f"{candidate}: ignored played file ({type(exc).__name__})")
+            continue
+        games = raw.get("games") if isinstance(raw, dict) else raw
+        if not isinstance(games, list):
+            warnings.append(f"{candidate}: expected a played games list; file ignored")
+            continue
+        result = set()
+        for item in games:
+            value = item.get("appid") if isinstance(item, dict) else item
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                result.add(value)
+            else:
+                warnings.append(f"{candidate}: invalid played appid {value!r}; entry ignored")
+        return result
+    return set()
+
+
 def dump_json(payload: Any) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 

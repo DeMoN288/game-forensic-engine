@@ -306,7 +306,7 @@ async def test_recommend_by_preset_excludes_blacklist_and_overlength(
                   reviews=make_reviews(25, "Beat it in one sitting, responsive controls",
                                        minutes=120, appid=100, positive=False)),
         200: Game(appid=200, name="Very Long", description="responsive controls",
-                  reviews=make_reviews(25, "Beat the game after many hours of grind",
+                  reviews=make_reviews(25, "Beat the game after many hours of exploration",
                                        minutes=600, appid=200, positive=False)),
         999: Game(appid=999, name="Banned", description="responsive controls",
                   reviews=make_reviews(25, "Beat it in one sitting, responsive controls",
@@ -343,8 +343,8 @@ async def test_recommend_by_preset_itch_scores_candidates(monkeypatch: pytest.Mo
                     is_downloadable=True, is_browser=False)
     page = """
         <div class="formatted_description">Responsive controls. Playtime: 1.5 hours.</div>
-        <div class="community_post"><div class="post_body">No stress.</div></div>
     """
+    page += '<div class="community_post"><div class="post_body">No stress.</div></div>' * 20
     transport = httpx.MockTransport(lambda request: httpx.Response(200, text=page))
     analyzed = await analyze_itch_game(card.url, title=card.title, transport=transport)
 
@@ -459,6 +459,7 @@ async def test_recommend_by_preset_both_bounds_sources_and_sorts(
     async def fake_analyze_itch_game(url: str, title: str = ""):
         itch_calls.append(url)
         return ItchGame(title=title, url=url, estimated_hours=1.0,
+                        verdict="NO_RED_FLAG_DETECTED", comments_count=20,
                         loop=_candidate(tactile_feedback=0.9, punishment_severity=0.1))
 
     monkeypatch.setattr(mcp_server, "search_by_tag", fake_search_by_tag)
@@ -508,7 +509,8 @@ async def test_recommend_by_preset_excludes_demos(
     async def fake_analyze_itch_game(url: str, title: str = ""):
         analyzed_urls.append(url)
         index = int(url.rsplit("-", 1)[1])
-        return ItchGame(title=titles[index], url=url, estimated_hours=1.0)
+        return ItchGame(title=titles[index], url=url, estimated_hours=1.0,
+                        verdict="NO_RED_FLAG_DETECTED", comments_count=20)
 
     monkeypatch.setattr(mcp_server, "search_by_tag", fake_search_by_tag)
     monkeypatch.setattr(mcp_server, "search_itch_games", fake_search_itch_games)

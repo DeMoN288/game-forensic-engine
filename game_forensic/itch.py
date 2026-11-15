@@ -8,6 +8,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .analyzer import Analyzer, AnalyzerConfig
+from .duration_passport import check_title_match
+from .hltb import fetch_hltb_times
 from .matcher import extract_loop
 from .models import CoreLoop, Game, Review
 
@@ -55,6 +57,7 @@ class ItchGame:
     verdict: str = "INSUFFICIENT_DATA"
     warnings: list[str] = field(default_factory=list)
     loop: CoreLoop = field(default_factory=CoreLoop)
+    categories: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -265,6 +268,15 @@ async def analyze_itch_game(
         duration_source = "description"
     else:
         duration_source = "comments"
+    if estimated_hours is None and transport is None:
+        try:
+            hltb = await fetch_hltb_times(resolved_title)
+            if (hltb and hltb.main_hours is not None
+                    and check_title_match(resolved_title, hltb.game_name)[0]):
+                estimated_hours = hltb.main_hours
+                duration_source = "howlongtobeat"
+        except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError):
+            report.warnings.append("HLTB duration lookup failed")
 
     return ItchGame(
         title=resolved_title,
@@ -277,4 +289,5 @@ async def analyze_itch_game(
         verdict=report.verdict,
         warnings=list(report.warnings),
         loop=loop,
+        categories=dict(report.categories),
     )

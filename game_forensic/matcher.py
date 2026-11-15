@@ -49,7 +49,7 @@ CUES = {
         r"фиксирован\w* билд\w*|нет прокачк\w*",
         (r"skill trees?|build variety|buildcraft\w*|customi[sz]able builds?|upgrade(?:s|able)?|"
          r"automation|abilities|дерев\w* навыков|вариатив\w* билд\w*|разнообраз\w* билд\w*|"
-         r"прокачк\w*|апгрейд\w*|автоматизац\w*"),
+         r"прокачк\w*|апгрейд\w*|автоматизац\w*|prestige"),
     ),
     "tactile_feedback": (
         r"clunky controls?|unresponsive controls?|floaty combat|неотзывчив\w* управлен\w*",
@@ -67,7 +67,8 @@ CUES = {
         r"no story|minimal (?:story|narrative)|no plot|minimal plot|pure gameplay|"
         r"без сюжет\w*|минимальн\w* сюжет\w*",
         (r"story[- ]rich|story[- ]driven|narrative[- ]driven|branching (?:story|narrative)|"
-         r"сюжетно[- ]ориентирован\w*|глубок\w* сюжет\w*|нелинейн\w* сюжет\w*"),
+         r"сюжетно[- ]ориентирован\w*|глубок\w* сюжет\w*|нелинейн\w* сюжет\w*|"
+         r"narrator|dialogue|branching choices"),
     ),
 }
 METADATA_CUES = {
