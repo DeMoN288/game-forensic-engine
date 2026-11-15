@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070a0d">
+  <meta name="description" content="Game Forensic Engine v1.6.0 — объяснимый форензик игр, GTI, CoreLoop и MCP-инструменты.">
+  <title>Game Forensic Engine v1.6.0</title>
+  <style>
+    :root{--bg:#070a0d;--panel:#0d1217;--panel2:#111820;--line:#24303a;--text:#e7edf2;--muted:#8d9aa5;--acid:#b7f34a;--cyan:#55d6e5;--orange:#ff9c5b;--red:#ff667d;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;--sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 82% 5%,#13232b 0,transparent 24rem),linear-gradient(180deg,#070a0d,#090d11 55%,#070a0d);color:var(--text);font-family:var(--sans);line-height:1.6}body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:42px 42px;mask-image:linear-gradient(to bottom,#000,transparent 80%)}
+    a{color:inherit;text-decoration:none}button,input,select{font:inherit}.wrap{width:min(1160px,calc(100% - 36px));margin:auto}.nav{height:70px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);position:relative;z-index:2}.brand{display:flex;gap:10px;align-items:center;font:700 13px var(--mono);letter-spacing:.08em}.brand svg{color:var(--acid)}.navlinks{display:flex;gap:22px;color:var(--muted);font-size:13px}.navlinks a:hover{color:var(--text)}
+    .hero{padding:105px 0 74px;display:grid;grid-template-columns:1.08fr .92fr;gap:68px;align-items:center}.eyebrow,.kicker{font:700 12px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--acid)}h1{font-size:clamp(52px,7vw,94px);letter-spacing:-.065em;line-height:.88;margin:21px 0 28px;max-width:780px}.version{display:inline-flex;vertical-align:top;margin:5px 0 0 10px;padding:7px 10px;border:1px solid #476020;border-radius:99px;color:var(--acid);background:#b7f34a0c;font:700 12px var(--mono);letter-spacing:0}.lead{max-width:650px;color:#aeb9c1;font-size:18px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:31px 0}.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:12px 17px;border:1px solid var(--line);border-radius:7px;background:#0e1419;color:var(--text);font-weight:700;font-size:13px;cursor:pointer;transition:.2s}.btn:hover{transform:translateY(-2px);border-color:#53636f}.btn.primary{background:var(--acid);border-color:var(--acid);color:#111805}.btn svg{width:17px;height:17px}.metrics{display:flex;gap:24px;flex-wrap:wrap;margin-top:35px}.metric strong{display:block;font:700 19px var(--mono);color:var(--cyan)}.metric span{font-size:12px;color:var(--muted)}
+    .terminal{border:1px solid #2b3943;background:#080c0f;box-shadow:0 25px 80px #0009;border-radius:12px;overflow:hidden;transform:rotate(.7deg)}.terminal-head{height:43px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid var(--line);background:#0d1318;color:var(--muted);font:12px var(--mono)}.dots{display:flex;gap:6px}.dots i{width:8px;height:8px;border-radius:50%;background:#35424a}.terminal pre,.codebox pre{margin:0;padding:23px;overflow:auto;color:#b8c7d0;font:12.5px/1.75 var(--mono);white-space:pre-wrap}.tok{color:var(--cyan)}.str{color:var(--acid)}.dim{color:#60717d}.copy{border:0;background:transparent;color:var(--muted);font:11px var(--mono);cursor:pointer}.copy:hover{color:var(--acid)}
+    section{padding:88px 0}.section-head{display:grid;grid-template-columns:.7fr 1.3fr;gap:45px;margin-bottom:40px}.section-head h2{font-size:clamp(34px,4vw,56px);line-height:1;letter-spacing:-.045em;margin:10px 0}.section-head p{color:var(--muted);max-width:620px;align-self:end}.num{color:#4c5b65;font:12px var(--mono)}
+    .pipeline{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}.step{position:relative;padding:27px;min-height:300px;border-right:1px solid var(--line);cursor:pointer;transition:.2s}.step:last-child{border:0}.step:hover,.step.active{background:linear-gradient(160deg,#152029,#0c1116)}.step.active:after{content:"";position:absolute;inset:auto 20px 0;height:2px;background:var(--acid)}.step-no{font:12px var(--mono);color:var(--acid)}.step-icon{width:44px;height:44px;margin:28px 0 22px;color:var(--cyan)}.step h3{margin:0 0 10px;font-size:18px}.step p{color:var(--muted);font-size:13px}.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:18px}.tag{padding:4px 7px;border:1px solid #293844;border-radius:4px;color:#aebbc4;font:10px var(--mono)}
+    .explorer{display:grid;grid-template-columns:.82fr 1.18fr;border:1px solid var(--line);border-radius:13px;overflow:hidden;background:var(--panel)}.controls{padding:30px;border-right:1px solid var(--line)}.controls h3,.preview h3{margin:0 0 24px;font:700 13px var(--mono);letter-spacing:.08em;color:#d6dfe5}.preset-tabs{display:grid;gap:8px;margin-bottom:27px}.preset{padding:14px;text-align:left;color:var(--muted);background:#0a0f13;border:1px solid var(--line);border-radius:7px;cursor:pointer}.preset b{display:block;color:var(--text);font:700 12px var(--mono);margin-bottom:3px}.preset.active{border-color:#698b2a;background:#b7f34a0b}.field{margin:18px 0}.field label{display:flex;justify-content:space-between;color:#aeb9c1;font-size:12px;margin-bottom:8px}.field select,.field input[type=number]{width:100%;padding:10px 12px;background:#080c10;color:var(--text);border:1px solid var(--line);border-radius:6px}.field input[type=range]{width:100%;accent-color:var(--acid)}.switches{display:grid;gap:12px}.switch{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#bac4cb}.switch input{appearance:none;width:39px;height:22px;border-radius:20px;background:#2a343b;position:relative;cursor:pointer}.switch input:after{content:"";position:absolute;width:16px;height:16px;background:#87949d;border-radius:50%;left:3px;top:3px;transition:.2s}.switch input:checked{background:#638824}.switch input:checked:after{left:20px;background:#eaffc1}.preview{padding:30px;background:#090e12}.codebox{border:1px solid var(--line);border-radius:8px;background:#05080a;position:relative}.codebox .copy{position:absolute;right:12px;top:10px}.codebox pre{min-height:235px;padding-top:43px}.output{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.result{padding:14px;border:1px solid var(--line);border-radius:7px;background:#0c1217}.result small{color:var(--muted);font:10px var(--mono)}.result strong{display:block;margin-top:6px;font:700 18px var(--mono)}.acid{color:var(--acid)}.cyan{color:var(--cyan)}.orange{color:var(--orange)}
+    .tool-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.tool{padding:22px;border:1px solid var(--line);background:linear-gradient(145deg,#0e151b,#0a0f13);border-radius:8px}.tool .tool-top{display:flex;justify-content:space-between;gap:12px}.tool h3{font:700 13px var(--mono);margin:0;overflow-wrap:anywhere}.tool p{font-size:12px;color:var(--muted);margin:13px 0 0}.tool-type{color:var(--cyan);font:10px var(--mono)}.modules{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:28px}.module{border:1px solid var(--line);padding:15px 10px;text-align:center;border-radius:6px;background:#0b1014}.module code{font-size:11px;color:var(--acid)}.module span{display:block;color:var(--muted);font-size:10px;margin-top:6px}
+    .timeline{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:45px}.timeline:before{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)}.release{padding:28px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}.release.current{border-color:#516b28;box-shadow:inset 0 0 50px #b7f34a08}.release .relhead{display:flex;justify-content:space-between;align-items:center}.release h3{font:700 26px var(--mono);margin:0}.release time{font:11px var(--mono);color:var(--muted)}.release ul{padding:0;list-style:none;margin:24px 0 0}.release li{position:relative;padding:8px 0 8px 22px;color:#aeb8c0;font-size:13px;border-top:1px solid #1e2830}.release li:before{content:"+";position:absolute;left:2px;color:var(--acid);font-family:var(--mono)}
+    .architecture{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.arch{padding:19px;border-left:2px solid var(--cyan);background:#0c1217}.arch b{font:12px var(--mono)}.arch span{display:block;color:var(--muted);font-size:11px;margin-top:7px}.cta{margin:30px auto 80px;padding:48px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(120deg,#101921,#0c1115);display:flex;justify-content:space-between;align-items:center;gap:30px}.cta h2{font-size:32px;line-height:1.1;margin:0 0 9px;letter-spacing:-.04em}.cta p{margin:0;color:var(--muted)}footer{border-top:1px solid var(--line);padding:27px 0 40px;color:var(--muted);font:11px var(--mono)}footer .wrap{display:flex;justify-content:space-between;gap:20px}
+    @media(max-width:900px){.hero{grid-template-columns:1fr;padding-top:70px}.terminal{transform:none}.pipeline{grid-template-columns:1fr 1fr}.step:nth-child(2){border-right:0}.step:nth-child(-n+2){border-bottom:1px solid var(--line)}.explorer{grid-template-columns:1fr}.controls{border-right:0;border-bottom:1px solid var(--line)}.tool-grid{grid-template-columns:1fr 1fr}.modules{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:620px){.wrap{width:min(100% - 24px,1160px)}.navlinks{display:none}.hero{padding:58px 0}.version{margin-left:0}.section-head{grid-template-columns:1fr;gap:5px}section{padding:65px 0}.pipeline,.tool-grid,.timeline,.architecture{grid-template-columns:1fr}.step{border-right:0;border-bottom:1px solid var(--line);min-height:auto}.step:nth-child(3){border-bottom:1px solid var(--line)}.timeline:before{display:none}.modules{grid-template-columns:1fr 1fr}.output{grid-template-columns:1fr}.cta{padding:28px;align-items:flex-start;flex-direction:column}footer .wrap{flex-direction:column}.preview,.controls{padding:20px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+  </style>
+</head>
+<body>
+  <header class="wrap nav">
+    <a class="brand" href="#top" aria-label="Game Forensic Engine">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/><path d="M10 7h4M7 10v4M17 10v4M10 17h4"/></svg>
+      GFE / FORENSIC CONSOLE
+    </a>
+    <nav class="navlinks" aria-label="Навигация"><a href="#pipeline">Pipeline</a><a href="#explorer">Presets</a><a href="#tools">MCP Tools</a><a href="#release">v1.6.0</a></nav>
+  </header>
+
+  <main id="top">
+    <div class="wrap hero">
+      <div>
+        <div class="eyebrow">Explainable game intelligence · MCP native</div>
+        <h1>Game<br>Forensic<br>Engine <span class="version">v1.6.0</span></h1>
+        <p class="lead">Разбирает игры на доказательства: извлекает <b>CoreLoop</b>, измеряет гринд через <b>GTI</b>, оценивает длительность и рекомендует то, что соответствует вашему вкусу — без непрозрачной магии.</p>
+        <div class="actions">
+          <a class="btn primary" href="https://github.com/DeMoN288/game-forensic-engine" target="_blank" rel="noreferrer">GitHub repository <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></a>
+          <a class="btn" href="https://github.com/DeMoN288/game-forensic-engine/releases/tag/v1.6.0" target="_blank" rel="noreferrer">Release v1.6.0</a>
+        </div>
+        <div class="metrics"><div class="metric"><strong>14</strong><span>MCP tools</span></div><div class="metric"><strong>5</strong><span>CoreLoop axes</span></div><div class="metric"><strong>244</strong><span>passing tests</span></div><div class="metric"><strong>EN / RU</strong><span>lexical analysis</span></div></div>
+      </div>
+      <div class="terminal" aria-label="MCP quick start">
+        <div class="terminal-head"><span class="dots"><i></i><i></i><i></i></span><span>quick-start.json</span><button class="copy" data-copy="quickCode">COPY</button></div>
+        <pre id="quickCode"><span class="dim"># install with uv</span>
+<span class="tok">uv</span> sync
+<span class="tok">uv</span> run game-forensic-mcp
+
+<span class="dim"># MCP client config</span>
+{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"steam-forensic"</span>: {
+      <span class="str">"command"</span>: <span class="str">"uv"</span>,
+      <span class="str">"args"</span>: [<span class="str">"run"</span>, <span class="str">"game-forensic-mcp"</span>]
+    }
+  }
+}</pre>
+      </div>
+    </div>
+
+    <section id="pipeline" class="wrap">
+      <div class="section-head"><div><span class="num">01 / PIPELINE</span><h2>От источника<br>до вердикта</h2></div><p>Каждая рекомендация проходит наблюдаемый конвейер. Нажмите на этап: от сбора данных до персонального ранжирования с объяснением каждого штрафа.</p></div>
+      <div class="pipeline">
+        <article class="step active" tabindex="0"><span class="step-no">01 — INGEST</span><svg class="step-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 12h32v24H8zM8 20h32M16 8v8M32 8v8"/><circle cx="17" cy="28" r="3"/><path d="M24 27h10M24 32h7"/></svg><h3>Sources</h3><p>Steam Store и отзывы, itch.io каталог и комментарии, HowLongToBeat с fallback для itch, цены CheapShark / Steam.</p><div class="tags"><span class="tag">STEAM</span><span class="tag">ITCH.IO</span><span class="tag">HLTB</span><span class="tag">PRICE</span></div></article>
+        <article class="step" tabindex="0"><span class="step-no">02 — EXTRACT</span><svg class="step-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="24" cy="24" r="16"/><path d="m15 25 6 6 13-15M24 8v5M40 24h-5M24 40v-5M8 24h5"/></svg><h3>CoreLoop</h3><p>Из текста и метаданных извлекаются действия, объекты, ограничения и темп. В v1.6.0 расширен EN/RU-лексикон.</p><div class="tags"><span class="tag">VERBS</span><span class="tag">OBJECTS</span><span class="tag">PACE</span><span class="tag">5 AXES</span></div></article>
+        <article class="step" tabindex="0"><span class="step-no">03 — SCORE</span><svg class="step-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 38V25M19 38V14M29 38V20M39 38V8"/><path d="M6 38h36"/></svg><h3>GTI + Duration</h3><p>Grind/ Toxicity Index, кластеры раннего оттока, категории жалоб и оценка часов до завершения с уровнем уверенности.</p><div class="tags"><span class="tag">0–100 GTI</span><span class="tag">CHURN</span><span class="tag">HOURS</span></div></article>
+        <article class="step" tabindex="0"><span class="step-no">04 — PERSONALIZE</span><svg class="step-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M24 8 29 19l12 2-9 9 2 12-10-6-10 6 2-12-9-9 12-2z"/></svg><h3>Taste Profile</h3><p><code>steam_dislike_feedback</code> обучает штрафы, а <code>exclude_played</code> исключает AppID из <code>my_steam_games.json</code>.</p><div class="tags"><span class="tag">PENALTIES</span><span class="tag">EXPLAINABLE</span><span class="tag">LOCAL</span></div></article>
+      </div>
+    </section>
+
+    <section id="explorer" class="wrap">
+      <div class="section-head"><div><span class="num">02 / LIVE EXPLORER</span><h2>Соберите<br>MCP-вызов</h2></div><p>Настройте реальный <code>recommend_by_preset</code>. Предпросмотр синхронно меняет аргументы и показывает форму структурированного результата.</p></div>
+      <div class="explorer">
+        <div class="controls">
+          <h3>01 — PRESET</h3>
+          <div class="preset-tabs">
+            <button class="preset" data-preset="perspective"><b>perspective</b>Иллюзии и перспектива</button>
+            <button class="preset" data-preset="meta_narrative"><b>meta_narrative</b>Мета и рассказчик</button>
+            <button class="preset active" data-preset="tactile_incremental"><b>tactile_incremental</b>Короткая тактильная инкременталка</button>
+          </div>
+          <div class="field"><label for="source">Источник</label><select id="source"><option value="both">both — Steam + itch.io</option><option value="steam">steam</option><option value="itch">itch</option></select></div>
+          <div class="field"><label for="hours">Максимальная длительность <output id="hoursOut">3 h</output></label><input id="hours" type="range" min="1" max="20" value="3"></div>
+          <div class="field"><label for="price">Потолок цены, USD <output id="priceOut">$15</output></label><input id="price" type="range" min="0" max="60" step="5" value="15"></div>
+          <div class="switches"><label class="switch">exclude_played <input id="played" type="checkbox" checked></label><label class="switch">on_sale_only <input id="sale" type="checkbox"></label><label class="switch">без лимита цены <input id="noPrice" type="checkbox"></label></div>
+        </div>
+        <div class="preview">
+          <h3>02 — GENERATED TOOL CALL</h3>
+          <div class="codebox"><button class="copy" data-copy="callCode">COPY</button><pre id="callCode"></pre></div>
+          <h3 style="margin-top:25px">03 — FORENSIC OUTPUT / SAMPLE</h3>
+          <div class="output"><div class="result"><small>CORELOOP MATCH</small><strong id="matchOut" class="acid">91.4%</strong></div><div class="result"><small>GTI SCORE</small><strong id="gtiOut" class="cyan">12.8</strong></div><div class="result"><small>EST. COMPLETION</small><strong id="durationOut" class="orange">2.4 h</strong></div></div>
+          <div class="codebox" style="margin-top:10px"><pre id="resultCode"></pre></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tools" class="wrap">
+      <div class="section-head"><div><span class="num">03 / MCP SURFACE</span><h2>14 инструментов.<br>Один stdio-сервер.</h2></div><p>Фактический публичный набор из <code>game_forensic/mcp_server.py</code>: анализ, сравнение, discovery, персональные данные и itch.io.</p></div>
+      <div class="tool-grid">
+        <article class="tool"><div class="tool-top"><h3>steam_analyze_game</h3><span class="tool-type">FORENSIC</span></div><p>Глубокий GTI-анализ, категории жалоб, HLTB, CoreLoop и вердикт.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_hltb_times</h3><span class="tool-type">DURATION</span></div><p>Main, main+extra, completionist и combined-время HowLongToBeat.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_match_backlog</h3><span class="tool-type">MATCH</span></div><p>Сравнение двух игр по пяти осям CoreLoop и safety gate.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_batch_filter</h3><span class="tool-type">FILTER</span></div><p>Параллельный отсев до восьми игр по GTI, длине и blacklist.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_recommend</h3><span class="tool-type">RANK</span></div><p>Похожие Steam-игры по CoreLoop с анти-гринд фильтрацией.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_search_games</h3><span class="tool-type">DISCOVERY</span></div><p>Поиск Steam Store по ключевой фразе с AppID и ценой.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_search_by_tag</h3><span class="tool-type">DISCOVERY</span></div><p>Каталожный поиск по английскому Steam-тегу или tag ID.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_blacklist_add</h3><span class="tool-type">MEMORY</span></div><p>Добавление AppID и причины в постоянный blacklist.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_blacklist_remove</h3><span class="tool-type">MEMORY</span></div><p>Удаление пользовательской или встроенной blacklist-записи.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_dislike_feedback</h3><span class="tool-type">LEARNING</span></div><p>Нормализация отказа и обучение штрафов вкусового профиля.</p></article>
+        <article class="tool"><div class="tool-top"><h3>steam_profile_set</h3><span class="tool-type">PROFILE</span></div><p>Сохранение курируемых значений пяти осей CoreLoop.</p></article>
+        <article class="tool"><div class="tool-top"><h3>recommend_by_preset</h3><span class="tool-type">CROSS-STORE</span></div><p>Рейтинг Steam / itch.io по пресету, цене, скидке и истории.</p></article>
+        <article class="tool"><div class="tool-top"><h3>itch_search_by_tag</h3><span class="tool-type">ITCH.IO</span></div><p>Поиск и анализ itch.io по тегу, длине, цене и платформе.</p></article>
+        <article class="tool"><div class="tool-top"><h3>itch_analyze_game</h3><span class="tool-type">ITCH.IO</span></div><p>GTI, CoreLoop и длительность отдельной страницы itch.io.</p></article>
+      </div>
+      <div class="modules" aria-label="Core modules"><div class="module"><code>matcher.py</code><span>CoreLoop extraction & similarity</span></div><div class="module"><code>itch.py</code><span>catalog & game analysis</span></div><div class="module"><code>pricing.py</code><span>price cache & sales</span></div><div class="module"><code>presets.py</code><span>curated targets & scoring</span></div><div class="module"><code>feedback.py</code><span>learned rejection penalties</span></div><div class="module"><code>storage.py</code><span>safe local persistence</span></div></div>
+    </section>
+
+    <section id="release" class="wrap">
+      <div class="section-head"><div><span class="num">04 / CHANGELOG</span><h2>От анализа<br>к персонализации</h2></div><p>v1.6.0 расширяет форензик за пределы Steam: cross-store discovery, длительность, цена и локальная память становятся частью одного объяснимого ранжирования.</p></div>
+      <div class="timeline">
+        <article class="release"><div class="relhead"><h3>v1.5.0</h3><time>BASELINE</time></div><ul><li>Steam forensic analysis и GTI</li><li>Пятиосевой CoreLoop matcher</li><li>MCP-инструменты для backlog и discovery</li><li>Безопасные blacklist и profile mutations</li></ul></article>
+        <article class="release current"><div class="relhead"><h3>v1.6.0</h3><time>CURRENT</time></div><ul><li>Расширенный EN/RU CoreLoop-лексикон</li><li>HowLongToBeat fallback для itch.io</li><li><code>load_played_appids()</code> и <code>exclude_played</code></li><li><code>pricing.py</code>: cache 1h, цена и фильтр скидки</li><li>Три реальных mechanic presets + learned penalties</li><li>244 passing tests</li></ul></article>
+      </div>
+    </section>
+
+    <section class="wrap" style="padding-top:20px">
+      <div class="architecture"><div class="arch"><b>combat_pace</b><span>Интенсивность и скорость боя</span></div><div class="arch"><b>build_depth</b><span>Глубина сборок и систем</span></div><div class="arch"><b>tactile_feedback</b><span>Ощущение действий и отклик</span></div><div class="arch"><b>punishment_severity</b><span>Цена ошибки и потери</span></div><div class="arch"><b>narrative_weight</b><span>Вес истории в цикле игры</span></div><div class="arch"><b>evidence</b><span>Фрагменты текста для каждой оценки</span></div><div class="arch"><b>confidence</b><span>Уверенность вместо ложной точности</span></div><div class="arch"><b>safety_gate</b><span>Единая политика допуска кандидатов</span></div></div>
+    </section>
+
+    <div class="wrap cta"><div><h2>Проверяйте игры как данные,<br>а не как рекламные обещания.</h2><p>MIT · Python 3.11+ · MCP 2.x · pure explainable heuristics</p></div><a class="btn primary" href="https://github.com/DeMoN288/game-forensic-engine" target="_blank" rel="noreferrer">Открыть исходный код</a></div>
+  </main>
+
+  <footer><div class="wrap"><span>GAME FORENSIC ENGINE / v1.6.0</span><span>Evidence-aware Steam & itch.io recommendations</span></div></footer>
+
+  <script>
+    const state={preset:'tactile_incremental'};
+    const samples={
+      perspective:{name:'Viewfinder-like candidate',match:94.2,gti:8.6,hours:4.1,score:85.6,axis:'build_depth'},
+      meta_narrative:{name:'Narrator-driven candidate',match:92.7,gti:10.4,hours:2.8,score:82.3,axis:'narrative_weight'},
+      tactile_incremental:{name:'Compact incremental candidate',match:91.4,gti:12.8,hours:2.4,score:78.6,axis:'tactile_feedback'}
+    };
+    const $=id=>document.getElementById(id);
+    function render(){
+      const source=$('source').value,hours=+$('hours').value,price=+$('price').value,played=$('played').checked,sale=$('sale').checked,noPrice=$('noPrice').checked,s=samples[state.preset];
+      $('hoursOut').textContent=hours+' h';$('priceOut').textContent=noPrice?'disabled':'$'+price;
+      const args={preset:state.preset,source,max_hours:hours,limit:5,exclude_played:played,max_price_usd:noPrice?null:price,on_sale_only:sale};
+      $('callCode').textContent='recommend_by_preset('+Object.entries(args).map(([k,v])=>`\n  ${k}=${typeof v==='string'?JSON.stringify(v):v===null?'None':v===true?'True':v===false?'False':v}`).join(',')+'\n)';
+      $('matchOut').textContent=s.match.toFixed(1)+'%';$('gtiOut').textContent=s.gti.toFixed(1);$('durationOut').textContent=Math.min(s.hours,hours).toFixed(1)+' h';
+      $('resultCode').textContent=JSON.stringify({preset:state.preset,count:1,items:[{name:s.name,source:source==='both'?'steam':source,score:s.score,gti_score:s.gti,estimated_completion_hours:Math.min(s.hours,hours),completion_source:source==='itch'?'itch_page_hltb_fallback':'howlongtobeat',reasons:[`CoreLoop match: ${s.match.toFixed(2)}`,`GTI penalty: -${s.gti.toFixed(2)}`,`target axis: ${s.axis}`],price_info:noPrice?null:{sale_price:price,is_on_sale:sale}}],excluded:[],warnings:[]},null,2);
+    }
+    document.querySelectorAll('.preset').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.preset').forEach(x=>x.classList.remove('active'));btn.classList.add('active');state.preset=btn.dataset.preset;render()}));
+    ['source','hours','price','played','sale','noPrice'].forEach(id=>$(id).addEventListener('input',render));
+    document.querySelectorAll('.copy').forEach(btn=>btn.addEventListener('click',async()=>{const node=$(btn.dataset.copy);try{await navigator.clipboard.writeText(node.innerText);btn.textContent='COPIED';setTimeout(()=>btn.textContent='COPY',1200)}catch(e){btn.textContent='SELECT';const range=document.createRange();range.selectNodeContents(node);getSelection().removeAllRanges();getSelection().addRange(range)}}));
+    document.querySelectorAll('.step').forEach(step=>{const activate=()=>{document.querySelectorAll('.step').forEach(x=>x.classList.remove('active'));step.classList.add('active')};step.addEventListener('click',activate);step.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();activate()}})});
+    render();
+  </script>
+</body>
+</html>
