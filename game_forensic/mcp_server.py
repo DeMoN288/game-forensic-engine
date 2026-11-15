@@ -14,7 +14,7 @@ from mcp.server.mcpserver import MCPServer
 from .analyzer import SUPPORTED_LANGUAGES, Analyzer, AnalyzerConfig
 from .feedback import load_rejection_penalties, record_rejection
 from .hltb import fetch_hltb_times
-from .itch import analyze_itch_game, search_itch_games
+from .itch import analyze_itch_game, is_demo_title, search_itch_games
 from .matcher import (
     AXES,
     DEFAULT_BLACKLIST,
@@ -24,7 +24,7 @@ from .matcher import (
     extract_loop,
     match_loops,
 )
-from .models import CoreLoop, GrindReport, Match
+from .models import GrindReport, Match
 from .network import NetworkConfig, SourceError, Transport
 from .pipeline import Pipeline, PipelineConfig
 from .policy import SafetyPolicy, safety_gate
@@ -776,19 +776,23 @@ async def recommend_by_preset(
     if max_hours <= 0:
         raise ValueError("max_hours must be positive")
     safe_limit = min(max(limit, 1), 25)
-    candidate_cap = min(safe_limit * 2, 16)
+    per_source_cap = max(safe_limit, 3)
+    candidate_cap = per_source_cap if source == "both" else min(safe_limit * 2, 16)
     blacklist, profiles, load_warnings = user_state()
     penalties = load_rejection_penalties()
 
     steam_items: list[dict[str, Any]] = []
     itch_cards: list[Any] = []
+    excluded: list[dict[str, Any]] = []
 
     async with Transport(NetworkConfig(timeout=30)) as transport:
         if source in {"both", "steam"}:
             seen: set[int] = set()
             for tag in preset_obj.steam_tags:
                 try:
-                    result = await search_by_tag(transport, tag, limit=safe_limit)
+                    result = await search_by_tag(
+                        transport, tag, limit=candidate_cap if source == "both" else safe_limit
+                    )
                 except (SourceError, ValueError, TypeError, KeyError, OSError):
                     continue
                 for item in result.get("items", []):
@@ -799,10 +803,17 @@ async def recommend_by_preset(
                         and appid not in seen
                     ):
                         seen.add(appid)
+                        if is_demo_title(str(item.get("name") or "")):
+                            excluded.append(
+                                {"appid": appid, "name": item["name"], "reason": "DEMO"}
+                            )
+                            continue
                         steam_items.append(item)
+            if source == "both":
+                steam_items = steam_items[:candidate_cap]
         if source in {"both", "itch"}:
             cards = await search_itch_games(tag=preset_obj.itch_tag, sort="popular")
-            itch_cards = cards[:candidate_cap]
+            itch_cards = [c for c in cards if not is_demo_title(c.title)][:candidate_cap]
 
         pipeline = Pipeline(
             transport,
@@ -867,7 +878,7 @@ async def recommend_by_preset(
                 "is_downloadable": card.is_downloadable,
                 "is_browser": card.is_browser,
                 "gti": analyzed.gti_score,
-                "loop": CoreLoop(),
+                "loop": analyzed.loop,
                 "hours": analyzed.estimated_hours,
                 "completion_source": analyzed.duration_source,
                 "comments_count": analyzed.comments_count,
@@ -877,9 +888,13 @@ async def recommend_by_preset(
         coros += [analyze_itch(card) for card in itch_cards]
         analyzed = await _bounded_gather(coros, concurrency=3)
 
-    excluded: list[dict[str, Any]] = []
     scored: list[dict[str, Any]] = []
     for result in analyzed:
+        if is_demo_title(str(result.get("name") or "")):
+            excluded.append(
+                {"appid": result.get("appid"), "name": result["name"], "reason": "DEMO"}
+            )
+            continue
         if result.get("excluded"):
             excluded.append(
                 {"appid": result.get("appid"), "name": result["name"],

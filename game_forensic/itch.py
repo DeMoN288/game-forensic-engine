@@ -8,7 +8,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .analyzer import Analyzer, AnalyzerConfig
-from .models import Game, Review
+from .matcher import extract_loop
+from .models import CoreLoop, Game, Review
 
 ITCH_BASE_URL = "https://itch.io"
 MAX_COMMENTS = 80
@@ -28,6 +29,13 @@ _DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DEMO_RE = re.compile(r"\bdemo\b", re.IGNORECASE)
+
+
+def is_demo_title(title: str) -> bool:
+    """Return True when a game title looks like a demo release."""
+    return bool(_DEMO_RE.search(title))
+
 
 @dataclass
 class ItchGame:
@@ -46,9 +54,12 @@ class ItchGame:
     gti_score: float = 0.0
     verdict: str = "INSUFFICIENT_DATA"
     warnings: list[str] = field(default_factory=list)
+    loop: CoreLoop = field(default_factory=CoreLoop)
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["loop"] = self.loop.model_dump()
+        return data
 
 
 def estimate_itch_hours(text: str) -> float | None:
@@ -134,7 +145,10 @@ def _matches_filters(
     *,
     browser_only: bool | None,
     free_only: bool,
+    exclude_demos: bool = True,
 ) -> bool:
+    if exclude_demos and is_demo_title(game.title):
+        return False
     if browser_only is False and not game.is_downloadable:
         return False
     if browser_only is True and not game.is_browser:
@@ -158,6 +172,7 @@ async def search_itch_games(
     free_only: bool = False,
     max_pages: int = 1,
     transport: httpx.AsyncBaseTransport | None = None,
+    exclude_demos: bool = True,
 ) -> list[ItchGame]:
     """Fetch and filter itch.io catalog games by tag and sort order."""
     if max_pages < 1:
@@ -183,7 +198,10 @@ async def search_itch_games(
             for cell in cells:
                 parsed = _parse_game_cell(cell)
                 if parsed is not None and _matches_filters(
-                    parsed, browser_only=browser_only, free_only=free_only
+                    parsed,
+                    browser_only=browser_only,
+                    free_only=free_only,
+                    exclude_demos=exclude_demos,
                 ):
                     games.append(parsed)
 
@@ -237,6 +255,7 @@ async def analyze_itch_game(
         reviews=reviews,
     )
     report = Analyzer(AnalyzerConfig()).analyze(synthetic_game)
+    loop = extract_loop(synthetic_game)
 
     combined_text = "\n".join([description, *comments])
     estimated_hours = estimate_itch_hours(combined_text)
@@ -257,4 +276,5 @@ async def analyze_itch_game(
         gti_score=report.gti if report.gti is not None else 0.0,
         verdict=report.verdict,
         warnings=list(report.warnings),
+        loop=loop,
     )

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from game_forensic import mcp_server
@@ -17,7 +18,8 @@ from game_forensic.feedback import (
     normalize_reason,
     record_rejection,
 )
-from game_forensic.itch import ItchGame
+from game_forensic.itch import ItchGame, analyze_itch_game, search_itch_games
+from game_forensic.matcher import match_loops
 from game_forensic.models import CoreLoop, Feature, Game
 from game_forensic.presets import PRESETS, get_preset, score_candidate_with_preset
 
@@ -332,15 +334,19 @@ async def test_recommend_by_preset_excludes_blacklist_and_overlength(
 
 @pytest.mark.asyncio
 async def test_recommend_by_preset_itch_scores_candidates(monkeypatch: pytest.MonkeyPatch,
-                                                          tmp_path: Path) -> None:
+                                                          tmp_path: Path, patch_mcp_network) -> None:
     monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
+    patch_mcp_network(monkeypatch, {})
 
     card = ItchGame(title="Nail Hammer", url="https://dev.itch.io/nail-hammer", author="A",
                     genre="Incremental", price="Free", platforms=["Windows"],
                     is_downloadable=True, is_browser=False)
-    analyzed = ItchGame(title="Nail Hammer", url="https://dev.itch.io/nail-hammer",
-                        estimated_hours=1.5, gti_score=5.0, verdict="NO_RED_FLAG_DETECTED",
-                        comments_count=3)
+    page = """
+        <div class="formatted_description">Responsive controls. Playtime: 1.5 hours.</div>
+        <div class="community_post"><div class="post_body">No stress.</div></div>
+    """
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=page))
+    analyzed = await analyze_itch_game(card.url, title=card.title, transport=transport)
 
     async def fake_search_itch_games(**kwargs):
         return [card]
@@ -359,9 +365,162 @@ async def test_recommend_by_preset_itch_scores_candidates(monkeypatch: pytest.Mo
     item = res["items"][0]
     assert item["name"] == "Nail Hammer"
     assert item["source"] == "itch"
-    assert item["gti_score"] == 5.0
+    assert item["gti_score"] == analyzed.gti_score
     assert item["estimated_completion_hours"] == 1.5
     assert item["genre"] == "Incremental"
+    match = match_loops(get_preset("tactile_incremental").loop, analyzed.loop)
+    assert match.score > 0
+    assert match.coverage > 0
+    assert item["reasons"][0] == (
+        f"CoreLoop match: {match.score * 100:.2f}; coverage: {match.coverage:.0%}"
+    )
+    assert item["score"] > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence_source", ["description", "comments"])
+async def test_analyze_itch_game_extracts_and_serializes_loop(evidence_source: str) -> None:
+    cue = "Responsive controls, no stress."
+    description = cue if evidence_source == "description" else "A short game."
+    comment = cue if evidence_source == "comments" else "A fun game."
+    page = f"""
+        <h1 class="game_title">Nail Hammer</h1>
+        <div class="formatted_description">{description}</div>
+        <div class="community_post"><div class="post_body">{comment}</div></div>
+    """
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=page))
+
+    result = await analyze_itch_game("https://dev.itch.io/nail-hammer", transport=transport)
+
+    assert result.title == "Nail Hammer"
+    assert set(result.loop.features) == {"tactile_feedback", "punishment_severity"}
+    assert all(feature.confidence > 0 and feature.evidence
+               for feature in result.loop.features.values())
+    assert json.loads(json.dumps(result.as_dict()))["loop"] == result.loop.model_dump()
+    assert ItchGame(title="Unknown", url="https://dev.itch.io/unknown").loop.features == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exclude_demos", [None, True, False])
+async def test_search_itch_games_filters_demo_titles(exclude_demos: bool | None) -> None:
+    titles = ["Nail Hammer [DEMO]", "Pocket Demo", "Tiny dEmO", "Demolition", "Full Game"]
+    catalog = "".join(
+        f'<div class="game_cell"><a class="title game_link" '
+        f'href="https://dev.itch.io/game-{index}">{title}</a></div>'
+        for index, title in enumerate(titles)
+    )
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=catalog))
+    options = {} if exclude_demos is None else {"exclude_demos": exclude_demos}
+
+    # Keep the pre-existing positional transport argument usable.
+    games = await search_itch_games("incremental", "popular", None, False, 1, transport, **options)
+
+    expected = titles if exclude_demos is False else ["Demolition", "Full Game"]
+    assert [game.title for game in games] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 2, 4])
+async def test_recommend_by_preset_both_bounds_sources_and_sorts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, patch_mcp_network, sample_game, limit: int,
+) -> None:
+    monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
+    cap = max(limit, 3)
+    games = {
+        appid: sample_game(appid, f"Steam {appid}", "", "Beat it in one sitting")
+        for appid in range(100, 108)
+    }
+    for appid, game in games.items():
+        game.loop = _candidate(tactile_feedback=0.95 if appid == 100 else 0.1,
+                               punishment_severity=0.1)
+    patch_mcp_network(monkeypatch, games)
+    steam_calls: list[int] = []
+    original_collect = mcp_server.Pipeline.collect
+
+    async def collect(self, appid: int, discover: bool = False):
+        steam_calls.append(appid)
+        return await original_collect(self, appid, discover=discover)
+
+    monkeypatch.setattr(mcp_server.Pipeline, "collect", collect)
+    search_limits: list[int] = []
+
+    async def fake_search_by_tag(transport, tag, limit=10):
+        search_limits.append(limit)
+        # The second preset tag repeats the same games.
+        return {"items": [{"appid": appid, "name": game.name} for appid, game in games.items()]}
+
+    cards = [ItchGame(title=f"Itch {index}", url=f"https://dev.itch.io/game-{index}")
+             for index in range(8)]
+    itch_calls: list[str] = []
+
+    async def fake_search_itch_games(**kwargs):
+        return cards
+
+    async def fake_analyze_itch_game(url: str, title: str = ""):
+        itch_calls.append(url)
+        return ItchGame(title=title, url=url, estimated_hours=1.0,
+                        loop=_candidate(tactile_feedback=0.9, punishment_severity=0.1))
+
+    monkeypatch.setattr(mcp_server, "search_by_tag", fake_search_by_tag)
+    monkeypatch.setattr(mcp_server, "search_itch_games", fake_search_itch_games)
+    monkeypatch.setattr(mcp_server, "analyze_itch_game", fake_analyze_itch_game)
+
+    result = json.loads(await mcp_server.recommend_by_preset(source="both", limit=limit))
+
+    assert search_limits == [cap] * len(get_preset("tactile_incremental").steam_tags)
+    assert sorted(steam_calls) == list(games)[:cap]
+    assert sorted(itch_calls) == sorted(card.url for card in cards[:cap])
+    assert result["count"] == limit
+    assert result["items"][0]["name"] == "Steam 100"
+    scores = [item["score"] for item in result["items"]]
+    assert scores == sorted(scores, reverse=True)
+    expected_sources = {"steam", "itch"} if limit > 1 else {"steam"}
+    assert {item["source"] for item in result["items"]} == expected_sources
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["steam", "itch"])
+@pytest.mark.parametrize("demo_in_catalog", [True, False])
+async def test_recommend_by_preset_excludes_demos(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, patch_mcp_network, sample_game,
+    source: str, demo_in_catalog: bool,
+) -> None:
+    monkeypatch.setenv("GAME_FORENSIC_DATA_DIR", str(tmp_path))
+    titles = ["Nail Hammer [DEMO]", "Pocket Demo", "Demolition"]
+    catalog_titles = titles if demo_in_catalog else ["Nail Hammer", "Pocket", "Demolition"]
+    games = {
+        appid: sample_game(appid, title, "responsive controls", "Beat it in one sitting")
+        for appid, title in enumerate(titles, start=100)
+    }
+    patch_mcp_network(monkeypatch, games)
+
+    async def fake_search_by_tag(transport, tag, limit=10):
+        return {"items": [{"appid": appid, "name": name}
+                          for appid, name in enumerate(catalog_titles, start=100)]}
+
+    cards = [ItchGame(title=name, url=f"https://dev.itch.io/game-{index}")
+             for index, name in enumerate(catalog_titles)]
+    analyzed_urls: list[str] = []
+
+    async def fake_search_itch_games(**kwargs):
+        return cards
+
+    async def fake_analyze_itch_game(url: str, title: str = ""):
+        analyzed_urls.append(url)
+        index = int(url.rsplit("-", 1)[1])
+        return ItchGame(title=titles[index], url=url, estimated_hours=1.0)
+
+    monkeypatch.setattr(mcp_server, "search_by_tag", fake_search_by_tag)
+    monkeypatch.setattr(mcp_server, "search_itch_games", fake_search_itch_games)
+    monkeypatch.setattr(mcp_server, "analyze_itch_game", fake_analyze_itch_game)
+
+    result = json.loads(await mcp_server.recommend_by_preset(source=source, limit=2))
+
+    assert [item["name"] for item in result["items"]] == ["Demolition"]
+    if source == "steam" or not demo_in_catalog:
+        assert {item["name"] for item in result["excluded"] if item["reason"] == "DEMO"} == set(titles[:2])
+    if source == "itch" and demo_in_catalog:
+        assert analyzed_urls == [cards[2].url]
 
 
 @pytest.mark.asyncio
